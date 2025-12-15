@@ -99,7 +99,7 @@ The directory structure should be:
 └──category.txt
 ```
 
-**KITTI**: You can download the KITTI dataset from this [url](https://drive.google.com/drive/folders/1fSu0_huWhticAlzLh3Ejpg8zxzqO1z-F). The directory structure should be
+**KITTI**: You can download the KITTI dataset from this [url](https://drive.google.com/drive/folders/1fSu0_huWhticAlzLh3Ejpg8zxzqO1z-F) or [HF](https://huggingface.co/datasets/XuminYu/KITTI_point_cloud_completion/tree/main). The directory structure should be
 
 ```
 │KITTI/
