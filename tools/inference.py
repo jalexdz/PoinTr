@@ -7,6 +7,7 @@ import os
 import numpy as np
 import cv2
 import sys
+import open3d as o3d
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(BASE_DIR, '../'))
 
@@ -90,6 +91,16 @@ def inference_single(model, pc_path, args, config, root=None):
         os.makedirs(target_path, exist_ok=True)
 
         np.save(os.path.join(target_path, 'fine.npy'), dense_points)
+        
+        # save as PCD
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(dense_points)
+        o3d.io.write_point_cloud(
+            os.path.join(target_path, 'fine.pcd'),
+            pcd,
+            write_ascii=False  # set True if you want human-readable
+        )
+
         if args.save_vis_img:
             input_img = misc.get_ptcloud_img(pc_ndarray_normalized['input'].numpy())
             dense_img = misc.get_ptcloud_img(dense_points)
