@@ -5,7 +5,7 @@ from datasets.data_transforms import Compose
 class AdaPoinTrPredictor:
     def __init__(self, model: torch.nn.Module,
                        n_points: int = 2048,
-                       normalize: bool = True
+                       normalize: bool = False
         ) -> None:
         self.model = model.eval()
         self.device = next(model.parameters()).device

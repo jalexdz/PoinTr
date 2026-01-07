@@ -2,6 +2,7 @@ import os
 import numpy as np
 import torch
 import open3d as o3d
+from datasets.io import IO
 
 from tools import builder
 from utils.config import cfg_from_yaml_file
@@ -41,6 +42,7 @@ def test_adapointr_inference_smoke():
     # ---- load PCD ----
     pcd = o3d.io.read_point_cloud(pcd_path)
     points = np.asarray(pcd.points, dtype=np.float32)
+    points = IO.get(pcd_path).astype(np.float32))
 
     assert points.ndim == 2
     assert points.shape[1] == 3
