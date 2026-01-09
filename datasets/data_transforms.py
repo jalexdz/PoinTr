@@ -75,7 +75,8 @@ class UpSamplePoints(object):
         need = self.n_points - curr
 
         if need < 0:
-            return ptcloud[np.random.permutation(self.n_points)]
+            idx = np.random.permutation(curr)[:self.n_points]
+            return ptcloud[idx]
 
         while curr <= need:
             ptcloud = np.tile(ptcloud, (2, 1))

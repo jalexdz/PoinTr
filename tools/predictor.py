@@ -5,7 +5,7 @@ from datasets.data_transforms import Compose
 class AdaPoinTrPredictor:
     def __init__(self, model: torch.nn.Module,
                        n_points: int = 2048,
-                       normalize: bool = False
+                       normalize: bool = True
         ) -> None:
         self.model = model.eval()
         self.device = next(model.parameters()).device
@@ -37,7 +37,8 @@ class AdaPoinTrPredictor:
         """
         point_cloud = np.asarray(point_cloud, dtype=np.float32)
         assert point_cloud.ndim == 2 and point_cloud.shape[1] == 3, "Input point cloud must be of shape (N, 3)"
-
+        print("raw min/max:", point_cloud.min(0), point_cloud.max(0))
+        print("raw radius m:", np.max(np.linalg.norm(point_cloud - point_cloud.mean(0), axis=1)))
         if self.normalize:
             centroid = np.mean(point_cloud, axis=0)
             point_cloud = point_cloud - centroid

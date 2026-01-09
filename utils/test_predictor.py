@@ -21,7 +21,7 @@ def test_adapointr_inference_smoke():
     # ---- paths (adjust if needed) ----
     cfg_path = "cfgs/PCN_models/AdaPoinTr.yaml"
     ckpt_path = "ckpts/AdaPoinTr_PCN.pth"
-    pcd_path = "demo/airplane.pcd"
+    pcd_path = "demo/partial.pcd"
 
     assert os.path.exists(cfg_path), "Config file missing"
     assert os.path.exists(ckpt_path), "Checkpoint missing"
