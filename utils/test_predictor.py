@@ -19,8 +19,8 @@ def test_adapointr_inference_smoke():
     """
 
     # ---- paths (adjust if needed) ----
-    cfg_path = "cfgs/PCN_models/AdaPoinTr.yaml"
-    ckpt_path = "ckpts/AdaPoinTr_PCN.pth"
+    cfg_path = "cfgs/ShapeNet55_models/AdaPoinTr.yaml"
+    ckpt_path = "ckpts/AdaPoinTr_s55.pth"
     pcd_path = "demo/partial.pcd"
 
     assert os.path.exists(cfg_path), "Config file missing"
