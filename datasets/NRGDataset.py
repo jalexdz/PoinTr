@@ -117,8 +117,12 @@ class NRG(data.Dataset):
 
         partial = torch.from_numpy(partial).float()
         gt = torch.from_numpy(gt).float()
+        data = {
+                    'partial': partial,
+                    'gt': gt
+                }
 
-        return taxonomy_id, model_id, partial, gt
+        return taxonomy_id, model_id, data
 
     def __len__(self):
         return len(self.file_list)

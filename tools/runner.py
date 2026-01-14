@@ -67,7 +67,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
     ChamferDisL1 = ChamferDistanceL1()
     ChamferDisL2 = ChamferDistanceL2()
 
-
     if args.resume:
         builder.resume_optimizer(optimizer, args, logger = logger)
     scheduler = builder.build_scheduler(base_model, optimizer, config, last_epoch=start_epoch-1)
@@ -106,7 +105,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 gt = data.cuda()
                 partial, _ = misc.seprate_point_cloud(gt, npoints, [int(npoints * 1/4) , int(npoints * 3/4)], fixed_points = None)
                 partial = partial.cuda()
-            elif dataset_name == 'Flexx2':
+            elif dataset_name == 'NRG':
                 partial = data['partial'].cuda()
                 gt = data['gt'].cuda()
             else:
