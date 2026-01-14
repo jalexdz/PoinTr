@@ -59,7 +59,8 @@ class NRG(data.Dataset):
             taxonomy_id = parts[0]
             model_id = parts[1]
             view_str = parts[2]
-            view_id = int(view_str)  # handles 00042
+            fname = os.path.basename(view_str)
+            view_id = int(fname.split("_")[0])  # handles 00042
 
             self.file_list.append({
                 "taxonomy_id": taxonomy_id,
