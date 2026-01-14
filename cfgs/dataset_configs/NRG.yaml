@@ -1,5 +1,5 @@
 NAME: NRG
-DATA_PATH: data/NRG
-PARTIAL_POINTS_PATH: data/NRG/%s/%s/views/%05d_partial.pcd
-COMPLETE_POINTS_PATH: data/NRG/%s/%s/gt.pcd
+DATA_PATH: data/NRG/
+PARTIAL_POINTS_PATH: data/NRG/data/%s/%s/views/%05d_partial.pcd
+COMPLETE_POINTS_PATH: data/NRG/data/%s/%s/gt.pcd
 
