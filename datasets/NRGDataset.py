@@ -23,7 +23,7 @@ def fps_np(points: np.ndarray, n: int, rng: np.random.Generator):
     return points[sel]
 
 @DATASETS.register_module()
-class NRGDataset(data.Dataset):
+class NRG(data.Dataset):
     """
     Expects list lines like:  taxonomy-model-00042
     Uses config.PARTIAL_POINTS_PATH and config.COMPLETE_POINTS_PATH format strings:
