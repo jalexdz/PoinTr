@@ -208,6 +208,9 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
                 gt = data.cuda()
                 partial, _ = misc.seprate_point_cloud(gt, npoints, [int(npoints * 1/4) , int(npoints * 3/4)], fixed_points = None)
                 partial = partial.cuda()
+            elif dataset_name == 'NRG':
+                gt = data['gt'].cuda()
+                partial = data['partial'].cuda()
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
@@ -401,6 +404,28 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
                     if taxonomy_id not in category_metrics:
                         category_metrics[taxonomy_id] = AverageMeter(Metrics.names())
                     category_metrics[taxonomy_id].update(_metrics)
+            elif dataset_name == 'NRG':
+                partial = data['partial'].cuda()
+                gt = data['gt'].cuda()
+
+                partial = misc.fps(partial, 2048)
+                ret = base_model(partial)
+                coarse_points = ret[0]
+                dense_points = ret[-1]
+                
+                sparse_loss_l1 = ChamferDisL1(coarse_points, gt)
+                sparse_loss_l2 = ChamferDisL2(coarse_points, gt)
+                dense_loss_l1 = ChamferDisL1(dense_points, gt)
+                dense_loss_l2 = ChamferDisL2(dense_points, gt)
+
+                test_losses.update([
+                    sparse_loss_l1.item() * 1000,
+                    sparse_loss_l2.item() * 1000,
+                    dense_loss_l1.item() * 1000,
+                    dense_loss_l2.item() * 1000,
+                ])
+
+                _metrics = Metrics.get(dense_points, gt)
             elif dataset_name == 'KITTI':
                 partial = data.cuda()
                 ret = base_model(partial)
