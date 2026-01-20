@@ -10,6 +10,32 @@ from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
 
+def apply_freeze_from_cfg(model, ft_cfg):
+    if not ft_cfg or not ft_cfg.get("enable", False):
+        return
+
+    m = model.module if hasattr(model, "module") else model
+
+    # freeze everything
+    for p in m.parameters():
+        p.requires_grad = False
+
+    pats = ft_cfg.get("unfreeze_patterns", [])
+    for name, p in m.named_parameters():
+        if any(pat in name for pat in pats):
+            p.requires_grad = True
+
+    if ft_cfg.get("freeze_bn", False):
+        for mod in m.modules():
+            if isinstance(mod, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                mod.eval()
+                for p in mod.parameters():
+                    p.requires_grad = False
+
+    trainable = [n for n, p in model.module.named_parameters() if p.requires_grad]
+    print("Trainable", len(trainable))
+    print("\n".join(trainable[:80]))
+
 def run_net(args, config, train_writer=None, val_writer=None):
     logger = get_logger(args.log_name)
     # build dataset
@@ -33,6 +59,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         best_metrics = Metrics(config.consider_metric, best_metrics)
     elif args.start_ckpts is not None:
         builder.load_model(base_model, args.start_ckpts, logger = logger)
+
 
     # print model info
     print_log('Trainable_parameters:', logger = logger)
@@ -60,6 +87,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
+   
+    apply_freeze_from_cfg(base_model, config)
+   
     # optimizer & scheduler
     optimizer = builder.build_optimizer(base_model, config)
     
