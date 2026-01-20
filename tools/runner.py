@@ -32,15 +32,18 @@ def apply_freeze_from_cfg(model, ft_cfg):
                 for p in mod.parameters():
                     p.requires_grad = False
 
-    trainable = [n for n, p in model.module.named_parameters() if p.requires_grad]
+    mm = model.module if hasattr(model, "module") else model
+    trainable = [n for n, p in mm.named_parameters() if p.requires_grad]
     print("Trainable", len(trainable))
     print("\n".join(trainable[:80]))
 
 def run_net(args, config, train_writer=None, val_writer=None):
     logger = get_logger(args.log_name)
     # build dataset
-    (train_sampler, train_dataloader), (_, test_dataloader) = builder.dataset_builder(args, config.dataset.train), \
-                                                            builder.dataset_builder(args, config.dataset.val)
+    (train_sampler, train_dataloader), (_, test_dataloader), (_, test_shapenet_dataloader) = builder.dataset_builder(args, config.dataset.train), \
+                                                                                             builder.dataset_builder(args, config.dataset.val), \
+                                                                                             builder.dataset_builder(args, config.dataset.val_shapenet)
+    
     # build model
     base_model = builder.model_builder(config.model)
     if args.use_gpu:
@@ -88,7 +91,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
    
-    apply_freeze_from_cfg(base_model, config)
+    apply_freeze_from_cfg(base_model, getattr(config, "finetune", None))
    
     # optimizer & scheduler
     optimizer = builder.build_optimizer(base_model, config)
@@ -199,9 +202,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
             (epoch,  epoch_end_time - epoch_start_time, ['%.4f' % l for l in losses.avg()]), logger = logger)
 
         if epoch % args.val_freq == 0:
+            dataset_name = config.dataset.val._base_.NAME
             # Validate the current model
-            metrics = validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
+            metrics = validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
 
+            if dataset_name == 'NRG':
+                metrics_sn = validate("ShapeNet", base_model, test_shapenet_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
+            
             # Save ckeckpoints
             if  metrics.better_than(best_metrics):
                 best_metrics = metrics
@@ -213,7 +220,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         train_writer.close()
         val_writer.close()
 
-def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger = None):
+def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger = None):
     print_log(f"[VALIDATION] Start validating epoch {epoch}", logger = logger)
     base_model.eval()  # set model to eval mode
 
@@ -230,7 +237,6 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
             model_id = model_ids[0]
 
             npoints = config.dataset.val._base_.N_POINTS
-            dataset_name = config.dataset.val._base_.NAME
             if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet':
                 partial = data[0].cuda()
                 gt = data[1].cuda()
@@ -241,6 +247,7 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
             elif dataset_name == 'NRG':
                 gt = data['gt'].cuda()
                 partial = data['partial'].cuda()
+
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
@@ -334,10 +341,11 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
 
     # Add testing results to TensorBoard
     if val_writer is not None:
-        val_writer.add_scalar('Loss/Epoch/Sparse', test_losses.avg(0), epoch)
-        val_writer.add_scalar('Loss/Epoch/Dense', test_losses.avg(2), epoch)
+        tag = dataset_name
+        val_writer.add_scalar(f'{tag}/Loss/Epoch/Sparse', test_losses.avg(0), epoch)
+        val_writer.add_scalar(f'{tag}/Loss/Epoch/Dense', test_losses.avg(2), epoch)
         for i, metric in enumerate(test_metrics.items):
-            val_writer.add_scalar('Metric/%s' % metric, test_metrics.avg(i), epoch)
+            val_writer.add_scalar(f'{tag}Metric/%s' % metric, test_metrics.avg(i), epoch)
 
     return Metrics(config.consider_metric, test_metrics.avg())
 

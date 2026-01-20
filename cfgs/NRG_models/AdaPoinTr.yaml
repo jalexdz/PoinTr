@@ -28,7 +28,10 @@ dataset : {
   val : { _base_: cfgs/dataset_configs/NRG.yaml, 
             others: {subset: 'test'}},
   test : { _base_: cfgs/dataset_configs/NRG.yaml, 
-            others: {subset: 'test'}}}     
+            others: {subset: 'test'}}, 
+  val_shapenet : {_base_: cfgs/dataset_configs/ShapeNet-55.yaml,
+                  others: {subset: 'test'}} 
+  } 
             
 model : {
     NAME: AdaPoinTr, 
