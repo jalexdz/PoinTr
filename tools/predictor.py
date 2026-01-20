@@ -43,7 +43,7 @@ class AdaPoinTrPredictor:
             centroid = np.mean(point_cloud, axis=0)
             point_cloud = point_cloud - centroid
             m = np.max(np.sqrt(np.sum(point_cloud**2, axis=1)))
-            point_cloud = point_cloud / (m + 1e-8)
+            point_cloud = point_cloud / (m + 1e-12)
 
         pc_ndarray_normalized = self.transform({'input': point_cloud})
 
@@ -52,7 +52,7 @@ class AdaPoinTrPredictor:
             complete_pc = fine.squeeze(0).cpu().numpy() # (M, 3)
 
         if self.normalize:
-            complete_pc = complete_pc * (m + 1e-8)
+            complete_pc = complete_pc * (m + 1e-12)
             complete_pc = complete_pc + centroid
 
         return complete_pc

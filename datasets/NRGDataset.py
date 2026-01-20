@@ -87,12 +87,19 @@ class NRG(data.Dataset):
         return pc[idx].astype(np.float32)
 
     def _norm_like_shapenet_using_gt(self, gt: np.ndarray, partial: np.ndarray):
-        centroid = np.mean(gt, axis=0)
-        gt0 = gt - centroid
-        m = np.max(np.sqrt(np.sum(gt0**2, axis=1)))
-        scale = (m + 1e-12)
-        gt0 = gt0 / scale
-        partial0 = (partial - centroid) / scale
+        # Normalize from PARTIAL to GT
+        centroid = np.mean(partial, axis=0)
+        p0 = partial - centroid
+        scale = np.max(np.linalg.norm(p0, axis=1)) + 1e-12
+
+        partial0 = p0 / scale
+        gt0 = (gt - centroid) / scale
+
+        # gt0 = gt - centroid
+        # m = np.max(np.sqrt(np.sum(gt0**2, axis=1)))
+        # scale = (m + 1e-12)
+        # gt0 = gt0 / scale
+        # partial0 = (partial - centroid) / scale
         return gt0.astype(np.float32), partial0.astype(np.float32)
 
     def __getitem__(self, idx):
