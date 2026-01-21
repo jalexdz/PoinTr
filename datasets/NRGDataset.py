@@ -86,7 +86,7 @@ class NRG(data.Dataset):
             idx = self.rng.choice(N, self.npoints, replace=True)
         return pc[idx].astype(np.float32)
 
-    def _norm_like_shapenet_using_gt(self, gt: np.ndarray, partial: np.ndarray):
+    def _norm_from_partial(self, gt: np.ndarray, partial: np.ndarray):
         # Normalize from PARTIAL to GT
         centroid = np.mean(partial, axis=0)
         p0 = partial - centroid
@@ -114,13 +114,14 @@ class NRG(data.Dataset):
 
         partial = IO.get(partial_path).astype(np.float32)
         gt = IO.get(gt_path).astype(np.float32)
+  
+        # joint normalization (gt-derived)
+        gt, partial = self._norm_from_partial(gt, partial)
 
         # enforce fixed size
         partial = self._sample_to_n(partial)
         gt = self._sample_to_n(gt)
 
-        # joint normalization (gt-derived)
-        gt, partial = self._norm_like_shapenet_using_gt(gt, partial)
 
         partial = torch.from_numpy(partial).float()
         gt = torch.from_numpy(gt).float()
