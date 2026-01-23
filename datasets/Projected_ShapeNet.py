@@ -101,15 +101,15 @@ class Projected_ShapeNet(data.Dataset):
         partial_path = self.partial_points_path % (sample['taxonomy_id'], sample['model_id'], rand_idx)
         partial = IO.get(partial_path).astype(np.float32)
 
-        assert data['gt'].shape[0] == self.npoints
 
         if self.transforms is not None:
             data = self.transforms(data)
 
         gt, partial = self._norm_from_partial(gt, partial)
-        
+
         data['gt'] = gt
         data['partial'] = partial
+        assert data['gt'].shape[0] == self.npoints
 
         return sample['taxonomy_id'], sample['model_id'], (data['partial'], data['gt'])
 
