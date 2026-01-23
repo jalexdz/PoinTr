@@ -48,14 +48,14 @@ class NRG(data.Dataset):
             # taxonomy-model-00042
             line = line.strip()
             taxonomy_id = line.split('-')[0]
-            model_id = line.split('-')[1].split('.')[0]
+            model_id = line.split('-')[1]
+            view_id = int(line.split('-')[2].split('.')[0])
     
 
             self.file_list.append({
                 "taxonomy_id": taxonomy_id,
                 "model_id": model_id,
                 "view_id": view_id,
-                "file_path": line,
             })
 
         print(f"[DATASET] {len(self.file_list)} samples were loaded")
@@ -131,12 +131,12 @@ class NRG(data.Dataset):
     def __getitem__(self, idx):
         sample = self.file_list[idx]
         data = {}
-        rand_idx = random.randint(0, self.n_renderings - 1) if self.subset=='train' else 0
+        #rand_idx = random.randint(0, self.n_renderings - 1) if self.subset=='train' else 0
 
-        gt_path = os.path.join(self.complete_points_root, sample['file_path'])
+        gt_path = os.path.join(self.complete_points_root, 'NRG_pc',  sample['taxonomy_id'] + '-', sample['model_id'] + '.pcd')
         gt = IO.get(gt_path).astype(np.float32)
 
-        partial_path = self.partial_points_path % (sample['taxonomy_id'], sample['model_id'], rand_idx)
+        partial_path = self.partial_points_path % (sample['taxonomy_id'], sample['model_id'], sample['view_id'])
         partial = IO.get(partial_path).astype(np.float32)
 
 
