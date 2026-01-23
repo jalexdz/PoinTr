@@ -1,5 +1,6 @@
 NAME: NRG
-DATA_PATH: data/NRG/
-PARTIAL_POINTS_PATH: data/%s/%s/views/%05d_partial.pcd
-COMPLETE_POINTS_PATH: data/%s/%s/gt.pcd
 N_POINTS: 8192
+N_RENDERINGS: 16
+DATA_PATH: data/NRG/NRG_projected
+PARTIAL_POINTS_PATH: data/NRG/projected_partial_noise/%s/%s/models/%d.pcd
+COMPLETE_POINTS_PATH: data/NRG/

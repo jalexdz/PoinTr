@@ -79,21 +79,37 @@ class Projected_ShapeNet(data.Dataset):
                 'objects': ['partial', 'gt']
             }])
 
+    def _norm_from_partial(self, gt: np.ndarray, partial: np.ndarray):
+        # Normalize from PARTIAL to GT
+        centroid = np.mean(partial, axis=0)
+        p0 = partial - centroid
+        scale = np.max(np.linalg.norm(p0, axis=1)) + 1e-12
+
+        partial0 = p0 / scale
+        gt0 = (gt - centroid) / scale
+
+        return gt0.astype(np.float32), partial0.astype(np.float32)
+    
     def __getitem__(self, idx):
         sample = self.file_list[idx]
         data = {}
         rand_idx = random.randint(0, self.n_renderings - 1) if self.subset=='train' else 0
 
         gt_path = os.path.join(self.complete_points_root, sample['file_path'])
-        data['gt'] = IO.get(gt_path).astype(np.float32)
+        gt = IO.get(gt_path).astype(np.float32)
 
         partial_path = self.partial_points_path % (sample['taxonomy_id'], sample['model_id'], rand_idx)
-        data['partial'] = IO.get(partial_path).astype(np.float32)
+        partial = IO.get(partial_path).astype(np.float32)
 
         assert data['gt'].shape[0] == self.npoints
 
         if self.transforms is not None:
             data = self.transforms(data)
+
+        gt, partial = self._norm_from_partial(gt, partial)
+        
+        data['gt'] = gt
+        data['partial'] = partial
 
         return sample['taxonomy_id'], sample['model_id'], (data['partial'], data['gt'])
 
