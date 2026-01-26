@@ -105,7 +105,7 @@ class Projected_ShapeNet(data.Dataset):
         if self.transforms is not None:
             data = self.transforms(data)
 
-        gt, partial = self._norm_from_partial(gt, partial)
+        #gt, partial = self._norm_from_partial(gt, partial)
 
         data['gt'] = gt
         data['partial'] = partial
