@@ -38,6 +38,7 @@ class NRG(data.Dataset):
         self.subset = config.subset
         self.n_renderings = config.N_RENDERINGS if self.subset == 'train' else 1
         self.data_list_file = os.path.join(self.data_root, f'{self.subset}.txt')
+        self.scaling_factor = config.SCALING_FACTOR # scale to divide samples by
 
         print(f"[DATASET] Open file {self.data_list_file}")
         with open(self.data_list_file, "r") as f:
@@ -59,7 +60,8 @@ class NRG(data.Dataset):
             })
 
         print(f"[DATASET] {len(self.file_list)} samples were loaded")
-
+        self.transforms = self._get_transforms(self.subset)
+        
     def _get_transforms(self, subset):
             if subset == 'train':
                 return data_transforms.Compose([{
@@ -91,10 +93,9 @@ class NRG(data.Dataset):
         # Normalize from PARTIAL to GT
         centroid = np.mean(partial, axis=0)
         p0 = partial - centroid
-        scale = np.max(np.linalg.norm(p0, axis=1)) + 1e-12
 
-        partial0 = p0 / scale
-        gt0 = (gt - centroid) / scale
+        partial0 = p0 / self.scaling_factor
+        gt0 = (gt - centroid) / self.scaling_factor
 
         return gt0.astype(np.float32), partial0.astype(np.float32)
 
@@ -133,12 +134,11 @@ class NRG(data.Dataset):
         data = {}
         #rand_idx = random.randint(0, self.n_renderings - 1) if self.subset=='train' else 0
 
-        gt_path = os.path.join(self.complete_points_root, 'NRG_pc',  sample['taxonomy_id'] + '-', sample['model_id'] + '.pcd')
+        gt_path = os.path.join(self.complete_points_root, 'NRG_pc',  sample['taxonomy_id'] + '-' + sample['model_id'] + '-' + sample['view_id'] + '.pcd')
         gt = IO.get(gt_path).astype(np.float32)
 
         partial_path = self.partial_points_path % (sample['taxonomy_id'], sample['model_id'], sample['view_id'])
         partial = IO.get(partial_path).astype(np.float32)
-
 
         if self.transforms is not None:
             data = self.transforms(data)
