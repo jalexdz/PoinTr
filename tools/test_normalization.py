@@ -1,6 +1,8 @@
+import argparse
 import numpy as np
 import torch
 from tools import builder
+from utils.config import * 
 
 def stats(pc):
     """
@@ -25,7 +27,7 @@ def main(args, config, max_batches=200):
             break
 
         taxonomy_id, model_id, data = batch
-
+        print("TESTING")
         # Projected_ShapeNet returns (partial, gt)
         partial, gt = data
         # shapes: [B, N, 3] — take first in batch
@@ -57,3 +59,22 @@ def main(args, config, max_batches=200):
           rmax_p.mean(), rmax_p.min(), rmax_p.max())
     print("  gt:      mean / min / max =",
           rmax_g.mean(), rmax_g.min(), rmax_g.max())
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True, help="Path to yaml config (same one you use for test/train)")
+    ap.add_argument("--max_batches", type=int, default=200)
+    ap.add_argument("--num_workers", type=int, default=4)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--launcher", default="none")
+    ap.add_argument("--local_rank", type=int, default=0)
+    ap.add_argument("--use_gpu", action="store_true", default=True)
+    ap.add_argument("--resume", action="store_true", default=False)
+    ap.add_argument("--experiment_path", default=".")
+    ap.add_argument("--distributed", action="store_true", default=False)
+    args = ap.parse_args()
+
+    # Load config yaml -> EasyDict (repo standard)
+    config = get_config(args)
+
+    main(args, config, max_batches=args.max_batches)
