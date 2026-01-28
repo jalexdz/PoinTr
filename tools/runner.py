@@ -40,9 +40,8 @@ def apply_freeze_from_cfg(model, ft_cfg):
 def run_net(args, config, train_writer=None, val_writer=None):
     logger = get_logger(args.log_name)
     # build dataset
-    (train_sampler, train_dataloader), (_, test_dataloader), (_, test_shapenet_dataloader) = builder.dataset_builder(args, config.dataset.train), \
-                                                                                             builder.dataset_builder(args, config.dataset.val), \
-                                                                                             builder.dataset_builder(args, config.dataset.val_shapenet)
+    (train_sampler, train_dataloader), (_, test_dataloader) = builder.dataset_builder(args, config.dataset.train), \
+                                                              builder.dataset_builder(args, config.dataset.val)
     
     # build model
     base_model = builder.model_builder(config.model)
@@ -206,9 +205,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
             # Validate the current model
             metrics = validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
 
-            if dataset_name == 'NRG':
-                metrics_sn = validate("ShapeNet", base_model, test_shapenet_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
-            
             # Save ckeckpoints
             if  metrics.better_than(best_metrics):
                 best_metrics = metrics
