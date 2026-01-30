@@ -125,7 +125,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             data_time.update(time.time() - batch_start_time)
             npoints = config.dataset.train._base_.N_POINTS
             dataset_name = config.dataset.train._base_.NAME
-            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet':
+            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet' or dataset_name=="NRG":
                 partial = data[0].cuda()
                 gt = data[1].cuda()
                 if config.dataset.train._base_.CARS:
@@ -137,9 +137,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 gt = data.cuda()
                 partial, _ = misc.seprate_point_cloud(gt, npoints, [int(npoints * 1/4) , int(npoints * 3/4)], fixed_points = None)
                 partial = partial.cuda()
-            elif dataset_name == 'NRG':
-                partial = data['partial'].cuda()
-                gt = data['gt'].cuda()
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
@@ -233,17 +230,13 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
             model_id = model_ids[0]
 
             npoints = config.dataset.val._base_.N_POINTS
-            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet':
+            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet' or dataset_name == 'NRG':
                 partial = data[0].cuda()
                 gt = data[1].cuda()
             elif dataset_name == 'ShapeNet':
                 gt = data.cuda()
                 partial, _ = misc.seprate_point_cloud(gt, npoints, [int(npoints * 1/4) , int(npoints * 3/4)], fixed_points = None)
                 partial = partial.cuda()
-            elif dataset_name == 'NRG':
-                gt = data['gt'].cuda()
-                partial = data['partial'].cuda()
-
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
@@ -389,7 +382,7 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
 
             npoints = config.dataset.test._base_.N_POINTS
             dataset_name = config.dataset.test._base_.NAME
-            if dataset_name == 'PCN' or dataset_name == 'Projected_ShapeNet':
+            if dataset_name == 'PCN' or dataset_name == 'Projected_ShapeNet' or dataset_name == 'NRG':
                 partial = data[0].cuda()
                 gt = data[1].cuda()
 
@@ -438,28 +431,6 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
                     if taxonomy_id not in category_metrics:
                         category_metrics[taxonomy_id] = AverageMeter(Metrics.names())
                     category_metrics[taxonomy_id].update(_metrics)
-            elif dataset_name == 'NRG':
-                partial = data['partial'].cuda()
-                gt = data['gt'].cuda()
-
-                partial = misc.fps(partial, 2048)
-                ret = base_model(partial)
-                coarse_points = ret[0]
-                dense_points = ret[-1]
-                
-                sparse_loss_l1 = ChamferDisL1(coarse_points, gt)
-                sparse_loss_l2 = ChamferDisL2(coarse_points, gt)
-                dense_loss_l1 = ChamferDisL1(dense_points, gt)
-                dense_loss_l2 = ChamferDisL2(dense_points, gt)
-
-                test_losses.update([
-                    sparse_loss_l1.item() * 1000,
-                    sparse_loss_l2.item() * 1000,
-                    dense_loss_l1.item() * 1000,
-                    dense_loss_l2.item() * 1000,
-                ])
-
-                _metrics = Metrics.get(dense_points, gt)
             elif dataset_name == 'KITTI':
                 partial = data.cuda()
                 ret = base_model(partial)

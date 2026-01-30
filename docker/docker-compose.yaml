@@ -16,7 +16,7 @@ services:
             - capabilities: [gpu]
 
     network_mode: "host"
-
+    shm_size: 8g
     environment:
       NVIDIA_VISIBLE_DEVICES: "all"
       PYTHONPATH: /workspace/adapointr:/workspace

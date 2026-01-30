@@ -1,14 +1,14 @@
 optimizer : {
   type: AdamW,
   kwargs: {
-  lr : 1.0e-5, 
-  weight_decay : 5.0e-4
+  lr : 0.0001, 
+  weight_decay : 0.0005
 }}
 
 scheduler: {
   type: LambdaLR,
   kwargs: {
-  decay_step: 999999,
+  decay_step: 21,
   lr_decay: 0.9,
   lowest_decay: 0.02  # min lr = lowest_decay * lr
 }}
@@ -16,7 +16,7 @@ scheduler: {
 bnmscheduler: {
   type: Lambda,
   kwargs: {
-  decay_step: 999999,
+  decay_step: 21,
   bn_decay: 0.5,
   bn_momentum: 0.9,
   lowest_decay: 0.01
@@ -26,18 +26,15 @@ dataset : {
   train : { _base_: cfgs/dataset_configs/NRG.yaml, 
             others: {subset: 'train'}},
   val : { _base_: cfgs/dataset_configs/NRG.yaml, 
-            others: {subset: 'test'}},
+            others: {subset: 'val'}},
   test : { _base_: cfgs/dataset_configs/NRG.yaml, 
-            others: {subset: 'test'}}, 
-  val_shapenet : {_base_: cfgs/dataset_configs/ShapeNet-55.yaml,
-                  others: {subset: 'test'}} 
-  } 
+            others: {subset: 'val'}}}
             
 model : {
     NAME: AdaPoinTr, 
     num_query: 512, 
     num_points: 8192,
-    center_num: [512, 256],
+    center_num: [256, 128],
     global_feature_dim: 1024, 
     encoder_type: graph,
     decoder_type: fc,
@@ -64,19 +61,9 @@ model : {
       cross_attn_combine_style: 'concat',
     }
 }
-
-finetune : {
-  enable: true,
-  freeze_bn: true,
-  unfreeze_patterns: [
-    "decode_head",
-    "reduce_map",
-    "increase_dim"
-  ]
-}
-
-total_bs : 12
+  
+total_bs : 48
 step_per_update : 1
-max_epoch : 80
+max_epoch : 600
 
-consider_metric: CDL2
+consider_metric: CDL1

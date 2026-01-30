@@ -48,7 +48,7 @@ class NRG(data.Dataset):
         for line in lines:
             # taxonomy-model-00042
             line = line.strip()
-            taxonomy_id = line.split('-')[0]
+            taxonomy_id = line.split('-')[0].split('/')[-1]
             model_id = line.split('-')[1]
             view_id = int(line.split('-')[2].split('.')[0])
     
@@ -57,6 +57,7 @@ class NRG(data.Dataset):
                 "taxonomy_id": taxonomy_id,
                 "model_id": model_id,
                 "view_id": view_id,
+                "file_path": line,
             })
 
         print(f"[DATASET] {len(self.file_list)} samples were loaded")
@@ -134,20 +135,26 @@ class NRG(data.Dataset):
         data = {}
         #rand_idx = random.randint(0, self.n_renderings - 1) if self.subset=='train' else 0
 
-        gt_path = os.path.join(self.complete_points_root, 'NRG_pc',  sample['taxonomy_id'] + '-' + sample['model_id'] + '-' + sample['view_id'] + '.pcd')
+        gt_path = os.path.join(self.complete_points_root, sample["file_path"])
         gt = IO.get(gt_path).astype(np.float32)
 
         partial_path = self.partial_points_path % (sample['taxonomy_id'], sample['model_id'], sample['view_id'])
         partial = IO.get(partial_path).astype(np.float32)
 
-        if self.transforms is not None:
-            data = self.transforms(data)
+#        if self.transforms is not None:
+#            data = self.transforms(data)
 
         gt, partial = self._norm_from_partial(gt, partial)
         
         data['gt'] = gt
         data['partial'] = partial
+#        print(data['gt'].shape[0])
+ #       print(self.npoints)
+
         assert data['gt'].shape[0] == self.npoints
+
+        if self.transforms is not None:
+            data = self.transforms(data)
 
         return sample['taxonomy_id'], sample['model_id'], (data['partial'], data['gt'])
 
