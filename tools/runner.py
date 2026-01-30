@@ -90,7 +90,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
    
-    apply_freeze_from_cfg(base_model, getattr(config, "finetune", None))
+    #apply_freeze_from_cfg(base_model, getattr(config, "finetune", None))
    
     # optimizer & scheduler
     optimizer = builder.build_optimizer(base_model, config)
@@ -457,7 +457,6 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
         print_log('[TEST] Metrics = %s' % (['%.4f' % m for m in test_metrics.avg()]), logger=logger)
 
      
-
     # Print testing results
     shapenet_dict = json.load(open('./data/shapenet_synset_dict.json', 'r'))
     print_log('============================ TEST RESULTS ============================',logger=logger)
