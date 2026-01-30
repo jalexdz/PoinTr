@@ -19,9 +19,9 @@ def test_adapointr_inference_smoke():
     """
 
     # ---- paths (adjust if needed) ----
-    cfg_path = "cfgs/Projected_ShapeNet55_models/AdaPoinTr.yaml"
-    ckpt_path = "ckpts/AdaPoinTr_ps55.pth"
-    pcd_path = "data/ShapeNet55-34/projected_partial_noise/03636649/3c012309d5c68153302ef84771572fcb/models/3.pcd" #"/workspace/data/ShapeNet55-34/shapenet_pc/03001627-c15a1da769c1ffc5be1649add3e36e21.npy" #"demo/airplane.pcd" #"data/NRG/data/glovebox/glovebox0/views/00000_partial.pcd" 
+    cfg_path = "experiments/AdaPoinTr/NRG_models/NRG_training/config.yaml" #"cfgs/Projected_ShapeNet55_models/AdaPoinTr.yaml"
+    ckpt_path = "experiments/AdaPoinTr/NRG_models/NRG_training/ckpt-last.pth" #"ckpts/AdaPoinTr_ps55.pth"
+    pcd_path = "data/NRG/projected_partial_noise/glovebox/glovebox/models/476.pcd" #"data/ShapeNet55-34/projected_partial_noise/03636649/3c012309d5c68153302ef84771572fcb/models/3.pcd" #"/workspace/data/ShapeNet55-34/shapenet_pc/03001627-c15a1da769c1ffc5be1649add3e36e21.npy" #"demo/airplane.pcd" #"data/NRG/data/glovebox/glovebox0/views/00000_partial.pcd" 
 
     assert os.path.exists(cfg_path), "Config file missing"
     assert os.path.exists(ckpt_path), "Checkpoint missing"
