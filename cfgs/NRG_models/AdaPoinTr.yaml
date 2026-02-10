@@ -28,7 +28,7 @@ dataset : {
   val : { _base_: cfgs/dataset_configs/NRG.yaml, 
             others: {subset: 'val'}},
   test : { _base_: cfgs/dataset_configs/NRG.yaml, 
-            others: {subset: 'val'}}}
+            others: {subset: 'test'}}}
             
 model : {
     NAME: AdaPoinTr, 
