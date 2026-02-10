@@ -221,6 +221,7 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
     test_metrics = AverageMeter(Metrics.names())
     category_metrics = dict()
     n_samples = len(test_dataloader) # bs is 1
+    losses = AverageMeter(['SparseLoss', 'DenseLoss'])
 
     interval =  n_samples // 10
 
@@ -243,6 +244,9 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
             ret = base_model(partial)
             coarse_points = ret[0]
             dense_points = ret[-1]
+
+            sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
+            total_loss = sparse_loss + dense_loss
 
             sparse_loss_l1 =  ChamferDisL1(coarse_points, gt)
             sparse_loss_l2 =  ChamferDisL2(coarse_points, gt)
@@ -273,6 +277,12 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
                     category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
                 category_metrics[_taxonomy_id].update(_metrics)
 
+            if args.distributed:
+                sparse_loss = dist_utils.reduce_tensor(sparse_loss, args)
+                dense_loss = dist_utils.reduce_tensor(dense_loss, args)
+                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
+            else:
+                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
 
             # if val_writer is not None and idx % 200 == 0:
             #     input_pc = partial.squeeze().detach().cpu().numpy()
@@ -331,8 +341,8 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
     # Add testing results to TensorBoard
     if val_writer is not None:
         tag = dataset_name
-        val_writer.add_scalar(f'{tag}/Loss/Epoch/Sparse', test_losses.avg(0), epoch)
-        val_writer.add_scalar(f'{tag}/Loss/Epoch/Dense', test_losses.avg(2), epoch)
+        val_writer.add_scalar(f'{tag}/Loss/Epoch/Sparse', losses.avg(0), epoch)
+        val_writer.add_scalar(f'{tag}/Loss/Epoch/Dense', losses.avg(1), epoch)
         for i, metric in enumerate(test_metrics.items):
             val_writer.add_scalar(f'{tag}Metric/%s' % metric, test_metrics.avg(i), epoch)
 
