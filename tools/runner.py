@@ -116,6 +116,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         batch_time = AverageMeter()
         data_time = AverageMeter()
         losses = AverageMeter(['SparseLoss', 'DenseLoss'])
+        train_losses = AverageMeter(['SparseLossL1', 'SparseLossL2', 'DenseLossL1', 'DenseLossL2'])
 
         num_iter = 0
 
@@ -143,7 +144,20 @@ def run_net(args, config, train_writer=None, val_writer=None):
             num_iter += 1
            
             ret = base_model(partial)
-            
+            coarse_points = ret[0]
+            dense_points = ret[-1]
+            sparse_loss_l1 =  ChamferDisL1(coarse_points, gt)
+            sparse_loss_l2 =  ChamferDisL2(coarse_points, gt)
+            dense_loss_l1 =  ChamferDisL1(dense_points, gt)
+            dense_loss_l2 =  ChamferDisL2(dense_points, gt)
+
+            if args.distributed:
+                sparse_loss_l1 = dist_utils.reduce_tensor(sparse_loss_l1, args)
+                sparse_loss_l2 = dist_utils.reduce_tensor(sparse_loss_l2, args)
+                dense_loss_l1 = dist_utils.reduce_tensor(dense_loss_l1, args)
+                dense_loss_l2 = dist_utils.reduce_tensor(dense_loss_l2, args)
+
+            train_losses.update([sparse_loss_l1.item() * 1000, sparse_loss_l2.item() * 1000, dense_loss_l1.item() * 1000, dense_loss_l2.item() * 1000])
             sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
          
             _loss = sparse_loss + dense_loss 
@@ -194,6 +208,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
         if train_writer is not None:
             train_writer.add_scalar('Loss/Epoch/Train/Sparse', losses.avg(0), epoch)
             train_writer.add_scalar('Loss/Epoch/Train/Dense', losses.avg(1), epoch)
+            train_writer.add_scalar('Loss/Epoch/Train/SparseL1', train_losses.avg(0), epoch)
+            train_writer.add_scalar('Loss/Epoch/Train/SparseL2', train_losses.avg(2), epoch)
         print_log('[Training] EPOCH: %d EpochTime = %.3f (s) Losses = %s' %
             (epoch,  epoch_end_time - epoch_start_time, ['%.4f' % l for l in losses.avg()]), logger = logger)
 
@@ -245,9 +261,6 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
             coarse_points = ret[0]
             dense_points = ret[-1]
 
-            sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
-            total_loss = sparse_loss + dense_loss
-
             sparse_loss_l1 =  ChamferDisL1(coarse_points, gt)
             sparse_loss_l2 =  ChamferDisL2(coarse_points, gt)
             dense_loss_l1 =  ChamferDisL1(dense_points, gt)
@@ -276,13 +289,6 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
                 if _taxonomy_id not in category_metrics:
                     category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
                 category_metrics[_taxonomy_id].update(_metrics)
-
-            if args.distributed:
-                sparse_loss = dist_utils.reduce_tensor(sparse_loss, args)
-                dense_loss = dist_utils.reduce_tensor(dense_loss, args)
-                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
-            else:
-                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
 
             # if val_writer is not None and idx % 200 == 0:
             #     input_pc = partial.squeeze().detach().cpu().numpy()
@@ -341,8 +347,8 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
     # Add testing results to TensorBoard
     if val_writer is not None:
         tag = dataset_name
-        val_writer.add_scalar(f'Loss/Epoch/Val/Sparse', losses.avg(0), epoch)
-        val_writer.add_scalar(f'Loss/Epoch/Val/Dense', losses.avg(1), epoch)
+        val_writer.add_scalar(f'Loss/Epoch/Val/Sparse', test_losses.avg(0), epoch)
+        val_writer.add_scalar(f'Loss/Epoch/Val/Dense', test_losses.avg(2), epoch)
         for i, metric in enumerate(test_metrics.items):
             val_writer.add_scalar(f'Metric/Val/%s' % metric, test_metrics.avg(i), epoch)
 
