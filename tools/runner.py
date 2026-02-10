@@ -169,8 +169,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
             n_itr = epoch * n_batches + idx
             if train_writer is not None:
-                train_writer.add_scalar('Loss/Batch/Sparse', sparse_loss.item() * 1000, n_itr)
-                train_writer.add_scalar('Loss/Batch/Dense', dense_loss.item() * 1000, n_itr)
+                train_writer.add_scalar('Loss/Batch/Train/Sparse', sparse_loss.item() * 1000, n_itr)
+                train_writer.add_scalar('Loss/Batch/Train/Dense', dense_loss.item() * 1000, n_itr)
 
             batch_time.update(time.time() - batch_start_time)
             batch_start_time = time.time()
@@ -192,8 +192,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
         epoch_end_time = time.time()
 
         if train_writer is not None:
-            train_writer.add_scalar('Loss/Epoch/Sparse', losses.avg(0), epoch)
-            train_writer.add_scalar('Loss/Epoch/Dense', losses.avg(1), epoch)
+            train_writer.add_scalar('Loss/Epoch/Train/Sparse', losses.avg(0), epoch)
+            train_writer.add_scalar('Loss/Epoch/Train/Dense', losses.avg(1), epoch)
         print_log('[Training] EPOCH: %d EpochTime = %.3f (s) Losses = %s' %
             (epoch,  epoch_end_time - epoch_start_time, ['%.4f' % l for l in losses.avg()]), logger = logger)
 
@@ -341,10 +341,10 @@ def validate(dataset_name, base_model, test_dataloader, epoch, ChamferDisL1, Cha
     # Add testing results to TensorBoard
     if val_writer is not None:
         tag = dataset_name
-        val_writer.add_scalar(f'{tag}/Loss/Epoch/Sparse', losses.avg(0), epoch)
-        val_writer.add_scalar(f'{tag}/Loss/Epoch/Dense', losses.avg(1), epoch)
+        val_writer.add_scalar(f'Loss/Epoch/Val/Sparse', losses.avg(0), epoch)
+        val_writer.add_scalar(f'Loss/Epoch/Val/Dense', losses.avg(1), epoch)
         for i, metric in enumerate(test_metrics.items):
-            val_writer.add_scalar(f'{tag}Metric/%s' % metric, test_metrics.avg(i), epoch)
+            val_writer.add_scalar(f'Metric/Val/%s' % metric, test_metrics.avg(i), epoch)
 
     return Metrics(config.consider_metric, test_metrics.avg())
 
