@@ -389,7 +389,10 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
     test_losses = AverageMeter(['SparseLossL1', 'SparseLossL2', 'DenseLossL1', 'DenseLossL2'])
     test_metrics = AverageMeter(Metrics.names())
     category_metrics = dict()
+    per_sample = []
+
     n_samples = len(test_dataloader) # bs is 1
+    print(f"[TEST] Start testing, total {n_samples} samples ...", logger = logger)
 
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(test_dataloader):
@@ -415,6 +418,16 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
 
                 _metrics = Metrics.get(dense_points, gt, require_emd=True)
                 # test_metrics.update(_metrics)
+                per_sample.append({
+                    "idx": idx,
+                    "taxonomy_id": taxonomy_id,
+                    "model_id": model_id,
+                    "metrics": [float(x) for x in _metrics],
+                    "sparse_loss_l1": sparse_loss_l1.item() * 1000,
+                    "sparse_loss_l2": sparse_loss_l2.item() * 1000,
+                    "dense_loss_l1": dense_loss_l1.item() * 1000,
+                    "dense_loss_l2": dense_loss_l2.item() * 1000
+                })
 
                 if taxonomy_id not in category_metrics:
                     category_metrics[taxonomy_id] = AverageMeter(Metrics.names())
@@ -499,4 +512,10 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
     for value in test_metrics.avg():
         msg += '%.3f \t' % value
     print_log(msg, logger=logger)
+
+    if dataset_name == 'NRG':
+        out_path = os.path.join(args.experiment_path, f'per_sample_metrics.json')
+        with open(out_path, 'w') as f:
+            json.dump(per_sample, f, indent=2)
+            
     return 
