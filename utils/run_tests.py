@@ -47,12 +47,12 @@ def save_boxplot(df, metric, out_path, title, ylabel):
 
     plot_df = df[np.isfinite(df[metric])].copy()
 
-    plt.figure(figsize=(7.5, 4.0))
+    plt.figure(figsize=(4.5, 5.5))
     ax = sns.boxplot(
         data=plot_df,
         x="asset",
         y=metric,
-        shofilers=True,
+        showfliers=True,
         whis=1.5
     )
 
@@ -66,7 +66,14 @@ def save_boxplot(df, metric, out_path, title, ylabel):
     plt.tight_layout()
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.rcParams.update({
+        "font.size": 14,
+        "axes.labelsize": 12,
+        "axes.titlesize": 16,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 12})
+    plt.savefig(out_path, dpi=600, bbox_inches='tight')
     plt.close()
 
 def main(cfg_path,
@@ -140,8 +147,8 @@ def main(cfg_path,
 
         per_sample[sample['model_id']].append({
              'idx': sample['view_id'], 
-             'cd': 2*_metrics[1],
-             'emd': 2* _metrics[3],
+             'cd': 2 * _metrics[1],
+             'emd': 2 * _metrics[3],
              'f1': _metrics[0],
              #'metrics': [float(x) for x in _metrics]
          })
@@ -151,8 +158,8 @@ def main(cfg_path,
 
     # Plot
     save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_cd_boxplot.pdf"), title="Test Set CD by Asset", ylabel="CD (mm)")
-    save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
-    save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1 (mm)")
+    save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
+    save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

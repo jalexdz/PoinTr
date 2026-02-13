@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-dev \
     git build-essential nano ca-certificates curl pkg-config tmux pcl-tools mesa-utils libgl1-mesa-glx libgl1-mesa-dri \
-    wget cmake ninja-build \
+    wget cmake ninja-build evince \
     gcc-10 g++-10 \
     && rm -rf /var/lib/apt/lists/*
 
