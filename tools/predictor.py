@@ -15,7 +15,7 @@ class AdaPoinTrPredictor:
         self.transform = Compose([{
             'callback': 'UpSamplePoints',
             'parameters': {
-                'n_points': self.n_points
+                'n_points': 2048
             },
             'objects': ['input']
         }, {
@@ -42,8 +42,8 @@ class AdaPoinTrPredictor:
         if self.normalize:
             centroid = np.mean(point_cloud, axis=0)
             point_cloud = point_cloud - centroid
-            m = 2.0 #np.max(np.sqrt(np.sum(point_cloud**2, axis=1)))
-            point_cloud = point_cloud / (m)
+            m = 2.0 
+            point_cloud = point_cloud / m
 
         pc_ndarray_normalized = self.transform({'input': point_cloud})
 
@@ -52,7 +52,7 @@ class AdaPoinTrPredictor:
             complete_pc = fine.squeeze(0).cpu().numpy() # (M, 3)
 
         if self.normalize:
-            complete_pc = complete_pc * (m)
+            complete_pc = complete_pc * m
             complete_pc = complete_pc + centroid
 
         return complete_pc
