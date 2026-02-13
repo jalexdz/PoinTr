@@ -1,5 +1,6 @@
-#import seaborn as sns
-#import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 import argparse
 import os
 import numpy as np
@@ -22,13 +23,61 @@ def _norm_from_partial(gt, partial):
 
     return gt0.astype(np.float32), partial0.astype(np.float32)
 
+def per_sample_to_df(per_sample):
+    rows = []
+    for asset, entries in per_sample.items():
+        for e in entries:
+            rows.append({
+                "asset": asset,
+                "view_id": e["idx"],
+                "cd": float(e["cd"]),
+                "emd": float(e["emd"]),
+                "f1": float(e["f1"]),
+            })
+            
+    df = pd.DataFrame(rows)
+    df["asset"] = pd.Categorical(df["asset"], 
+                                 categories=sorted(df["asset"].unique()),
+                                 ordered=True)
+    
+    return df
+
+def save_boxplot(df, metric, out_path, title, ylabel):
+    assert metric in df.columns, f"Invalid metric: {metric}"
+
+    plot_df = df[np.isfinite(df[metric])].copy()
+
+    plt.figure(figsize=(7.5, 4.0))
+    ax = sns.boxplot(
+        data=plot_df,
+        x="asset",
+        y=metric,
+        shofilers=True,
+        whis=1.5
+    )
+
+    ax.set_xlabel('Asset Class')
+    ax.set_ylabel(ylabel)
+    if title is None:
+        title = f'{metric.upper()} distribution across viewpoints (per asset)'
+    ax.set_title(title)
+
+    plt.xticks(rotation=20, ha="right")
+    plt.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
 def main(cfg_path,
          ckpt_path,
-         test_txt_path,):
-    # ---- paths (adjust if needed) ----
+         test_txt_path,
+         out_path,
+         ):
 
     assert os.path.exists(cfg_path), "Config file missing"
     assert os.path.exists(ckpt_path), "Checkpoint missing"
+
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -92,17 +141,19 @@ def main(cfg_path,
         per_sample[sample['model_id']].append({
              'idx': sample['view_id'], 
              'cd': 2*_metrics[1],
-             'emd': _metrics[3],
+             'emd': 2* _metrics[3],
              'f1': _metrics[0],
              #'metrics': [float(x) for x in _metrics]
          })
         
     # Run analysis
-    for asset in per_sample.keys():
-        for data in per_sample[asset]:
-             print(data['idx'])
+    df = per_sample_to_df(per_sample)
 
-    print(per_sample.keys())
+    # Plot
+    save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_cd_boxplot.pdf"), title="Test Set CD by Asset", ylabel="CD (mm)")
+    save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
+    save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1 (mm)")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -120,6 +171,12 @@ if __name__ == "__main__":
         required = True, 
         type = str, 
         help = 'Path to txt file containing list of test PCDs')
+    parser.add_argument(
+        "--out_path",
+        required=True,
+        type = str, 
+        default="results",
+        help = 'Output path')
     args = parser.parse_args()
 
-    main(cfg_path=args.cfg_path, ckpt_path=args.ckpt_path, test_txt_path=args.test_txt_path)
+    main(cfg_path=args.cfg_path, ckpt_path=args.ckpt_path, test_txt_path=args.test_txt_path, out_path=args.out_path)
