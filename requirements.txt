@@ -1,6 +1,8 @@
 easydict
 h5py
 matplotlib<3.10
+seaborn
+pandas
 numpy
 open3d  
 opencv-python
