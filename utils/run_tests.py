@@ -86,7 +86,7 @@ def compute_samples(df,
                     metric_col="cd"
                     ):
     # For CD:
-    # Get lowest performing 10th percentile
+    # Get lowest performing
     # Get median
     # Get highest performing sample (non-outlier)
     # Get all outliers
@@ -110,7 +110,7 @@ def compute_samples(df,
 
         # All outliers
         # Highest non-outlier
-        non_outliers = vals[vals <= outlier_high and vals >= outlier_low]
+        non_outliers = vals[(vals <= outlier_high) & (vals >= outlier_low)]
         highest_non_outlier = float(np.max(non_outliers))
         lowest_non_outlier = float(np.min(non_outliers))
 
@@ -139,7 +139,7 @@ def compute_samples(df,
             print(f"[WARN] Couldn't pick highest non-outlier for {asset}")
 
         # Outliers
-        all_outliers = vals[vals > outlier_high or vals < outlier_low]
+        all_outliers = vals[(vals > outlier_high) | (vals < outlier_low)]
         for oi, orow in all_outliers.iterrows():
             picks.append((asset, metric_col, "outlier", oi, orow))
         
@@ -276,14 +276,19 @@ def main(cfg_path,
 
     # get iqs
     compute_samples(df,
-                    os.path.join(out_path, "results"),
+                    os.path.join(out_path, "results_by_cd.csv"),
                     os.path.join(out_path, "plots/graphics"),
                     metric_col="cd")
     
     compute_samples(df,
-                    os.path.join(out_path, "results"),
+                    os.path.join(out_path, "results_by_f1.csv"),
                     os.path.join(out_path, "plots/graphics"),
                     metric_col="f1")
+    
+    compute_samples(df,
+                os.path.join(out_path, "results_by_emd.csv"),
+                os.path.join(out_path, "plots/graphics"),
+                metric_col="emd")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
