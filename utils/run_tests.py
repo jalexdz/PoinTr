@@ -110,9 +110,17 @@ def compute_samples(df,
 
         # All outliers
         # Highest non-outlier
-        non_outliers = vals[(vals <= outlier_high) & (vals >= outlier_low)]
-        highest_non_outlier = float(np.max(non_outliers))
-        lowest_non_outlier = float(np.min(non_outliers))
+        non_outlier_mask = (g[metric_col] >= outlier_low) & (g[metric_col] <= outlier_high)
+        outlier_mask = (g[metric_col] < outlier_low) | (g[metric_col] > outlier_high)
+
+        non_outlier_df = g[non_outlier_mask].copy()
+        outlier_df = g[outlier_mask].copy()
+
+        if len(non_outlier_df) == 0:
+            non_outlier_df = g.copy()
+
+        highest_non_outlier = float(non_outlier_df[metric_col].max())
+        lowest_non_outlier = float(non_outlier_df[metric_col].min())
 
         # Find the row
         def find_closest_row(value, kind):
@@ -139,8 +147,7 @@ def compute_samples(df,
             print(f"[WARN] Couldn't pick highest non-outlier for {asset}")
 
         # Outliers
-        all_outliers = vals[(vals > outlier_high) | (vals < outlier_low)]
-        for oi, orow in all_outliers.iterrows():
+        for oi, orow in outlier_df.iterrows():
             picks.append((asset, metric_col, "outlier", oi, orow))
         
     # Build dataframe
