@@ -76,6 +76,119 @@ def save_boxplot(df, metric, out_path, title, ylabel):
     plt.savefig(out_path, dpi=600, bbox_inches='tight')
     plt.close()
 
+def get_graphics():
+    # Save partial | prediction | gt | heatmap
+    pass
+
+def compute_samples(df, 
+                    out_csv="selected_samples.csv",
+                    job_out_dir="metrics",
+                    metric_col="cd"
+                    ):
+    # For CD:
+    # Get lowest performing 10th percentile
+    # Get median
+    # Get highest performing sample (non-outlier)
+    # Get all outliers
+    assert metric_col in df.columns, f"Metric {metric_col} not found"
+    picks = []
+
+    grouped = df.groupby("asset")
+
+    for asset, g in grouped:
+        vals = g[metric_col].dropna().values
+        if len(vals) == 0:
+            continue
+
+        q1 = np.percentile(vals, 25)
+        q2 = np.percentile(vals, 50)
+        q3 = np.percentile(vals, 75)
+        iqr = q3 - q1
+
+        outlier_high = q3 + 1.5 * iqr
+        outlier_low = q1 - 1.5 * iqr
+
+        # All outliers
+        # Highest non-outlier
+        non_outliers = vals[vals <= outlier_high and vals >= outlier_low]
+        highest_non_outlier = float(np.max(non_outliers))
+        lowest_non_outlier = float(np.min(non_outliers))
+
+        # Find the row
+        def find_closest_row(value, kind):
+            idx = (g[metric_col] - value).abs().idxmin()
+            row = g.loc[idx]
+            return idx, row
+        
+        try: 
+            idx_min, row_min = find_closest_row(lowest_non_outlier, "lowest")
+            picks.append((asset, metric_col, "lowest", idx_min, row_min))
+        except: 
+            print(f"[WARN] Couldn't pick lowest non-outlier for {asset}")
+
+        try: 
+            idx_med, row_med = find_closest_row(q2, "median")
+            picks.append((asset, metric_col, "median", idx_med, row_med))
+        except:
+            print(f"[WARN] Couldn't pick median for {asset}")
+
+        try: 
+            idx_max, row_max = find_closest_row(highest_non_outlier, "highest")
+            picks.append((asset, metric_col, "highest", idx_max, row_max))
+        except:
+            print(f"[WARN] Couldn't pick highest non-outlier for {asset}")
+
+        # Outliers
+        all_outliers = vals[vals > outlier_high or vals < outlier_low]
+        for oi, orow in all_outliers.iterrows():
+            picks.append((asset, metric_col, "outlier", oi, orow))
+        
+    # Build dataframe
+    pick_rows = []
+    for asset, metric_used, sel_type, idx, row in picks:
+        all_metrics = {c: float(row[c]) for c in df.columns if c in ("cd", "emd", "f1")}
+
+        pick_row = {
+            "asset": asset,
+            "selection_type": sel_type,
+            "selection_metric": metric_used,
+            "df_index": int(idx),
+            "view_id": int(row["view_id"]),
+        }
+
+        # Merge metric values
+        pick_row.update(all_metrics)
+        pick_rows.append(pick_row)
+
+    picks_df = pd.DataFrame(pick_rows)
+
+    # Save CSV
+    picks_df.to_csv(out_csv, index=False)
+    print(f"[RESULT] Saved {out_csv}")
+
+    # # Create render jobs
+    # job_paths = []
+    # for _, r in picks_df.iterrows():
+    #     sample_row = {
+    #         "asset": r["asset"],
+    #         "view_id": int(r["view_id"]),
+    #         "selection_metric": r["selection_metric"],
+    #         "selection_type": r["selection_type"],
+    #         "cd": float(r["cd"]) if "cd" in r else None,
+    #         "emd": float(r["emd"]) if "emd" in r else None,
+    #         "f1": float(r["f1"]) if "f1" in r else None
+    #     }
+
+    #     job_path = get_graphics(sample_row, job_out_dir=job_out_dir,
+    #                             note=f"selection_type={r['selection_type']}, metric={r['selection_metric']}")
+        
+    #     job_paths.append(job_path)
+
+    # print(f"[RESULT] Created {len(job_paths)} jobs")
+
+    return picks_df
+
+
 def main(cfg_path,
          ckpt_path,
          test_txt_path,
@@ -160,6 +273,17 @@ def main(cfg_path,
     save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_cd_boxplot.pdf"), title="Test Set CD by Asset", ylabel="CD (mm)")
     save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
     save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
+
+    # get iqs
+    compute_samples(df,
+                    os.path.join(out_path, "results"),
+                    os.path.join(out_path, "plots/graphics"),
+                    metric_col="cd")
+    
+    compute_samples(df,
+                    os.path.join(out_path, "results"),
+                    os.path.join(out_path, "plots/graphics"),
+                    metric_col="f1")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
