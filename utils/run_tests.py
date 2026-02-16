@@ -255,7 +255,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     title_y = max(4, (title_height, title_h) // 2)
     draw.text((title_x, title_y), title_txt, fill=(0, 0, 0), font=title_font)
 
-    caption_labels = ["Partial", "Prediction", "GT"]
+    caption_labels = ["Part.", "Pred.", "GT"]
     if include_error:
         caption_labels.append("Error")
 
