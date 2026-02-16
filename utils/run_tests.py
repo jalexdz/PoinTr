@@ -8,7 +8,6 @@ import torch
 import open3d as o3d
 from datasets.io import IO
 from PIL import Image, ImageDraw, ImageFont
-from matplotlib.cm import cm
 
 from tools import builder
 from utils.config import cfg_from_yaml_file
@@ -98,7 +97,7 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
         vmax = max(1e-6, np.percentile(dists, 95))
 
     norm = np.clip(dists / float(vmax), 0.0, 1.0)
-    cmap_func = cm.get_cmap(cmap)
+    cmap_func = plt.get_cmap(cmap)
     colors = cmap_func(norm)
     return colors.astype(np.float64), dists
 
@@ -200,7 +199,9 @@ def render_triplet_from_pcds(partial_pcd_path,
     pred_error_stats = None
     if include_error: 
         err_colors, dists = _compute_error_colormap(complete_pcd, gt_pcd, cmap='viridis', vmax=None)
-        pred_err_pcd = complete_pcd.clone()
+        complete_pts = np.asarray(complete_pcd.points)
+        pred_err_pcd = o3d.geometry.PointCloud()
+        pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts)
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
         img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
         panels.append(Image.fromarray(img_err))
@@ -393,7 +394,7 @@ def compute_samples(df,
         view_id = g["view_id"].iloc[0]
 
         partial_pcd_path = os.path.join("data", "NRG", "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd")
-        gt_pcd_path = os.path.join("data", "NRG", f"{asset}-{asset}-{view_id}.pcd")
+        gt_pcd_path = os.path.join("data", "NRG", "NRG_pc", f"{asset}-{asset}-{view_id}.pcd")
 
         out_path = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
 
