@@ -7,6 +7,8 @@ import numpy as np
 import torch
 import open3d as o3d
 from datasets.io import IO
+from PIL import Image, ImageDraw, ImageFont
+from matplotlib.cm import cm
 
 from tools import builder
 from utils.config import cfg_from_yaml_file
@@ -21,7 +23,7 @@ def _norm_from_partial(gt, partial):
     partial0 = p0 / 2.0
     gt0 = (gt - centroid) / 2.0
 
-    return gt0.astype(np.float32), partial0.astype(np.float32)
+    return gt0.astype(np.float32), partial0.astype(np.float32), centroid
 
 def per_sample_to_df(per_sample):
     rows = []
@@ -76,11 +78,219 @@ def save_boxplot(df, metric, out_path, title, ylabel):
     plt.savefig(out_path, dpi=600, bbox_inches='tight')
     plt.close()
 
-def get_graphics():
-    # Save partial | prediction | gt | heatmap
-    pass
+
+def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
+    '''Return Nx3 colors for pred ponts = nearest distance to GT mapped to colormap'''
+    pred_np =  np.asarray(pred.points)
+    gt_np = np.asarray(gt.points)
+
+    if pred_np.size == 0 or gt_np.size == 0:
+        return np.zeros((pred_np.shape[0], 3), dtype=np.float32), np.zeros((pred_np.shape[0],), dtype=np.float32)
+    
+    gt_tree = o3d.geometry.KDTreeFlann(gt)
+    dists = np.zeros((pred_np.shape[0],), dtype=np.float32)
+
+    for i, p in enumerate(pred_np):
+        _, idx, dist2 = gt_tree.search_knn_vector_3d(p, 1)
+        dists[i] = np.sqrt(dist2[0]) if len(dist2) > 0 else 0.0
+
+    if vmax is None:
+        vmax = max(1e-6, np.percentile(dists, 95))
+
+    norm = np.clip(dists / float(vmax), 0.0, 1.0)
+    cmap_func = cm.get_cmap(cmap)
+    colors = cmap_func(norm)
+    return colors.astype(np.float64), dists
+
+def _render_pcd_to_image(pcd,
+                         cam_center,
+                         cam_pos,
+                         cam_up, 
+                         width=512,
+                         height=512,
+                         point_size=2.0,
+                         visible=False
+                         ):
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(width=width, height=height, visible=visible)
+    vis.add_geometry(pcd)
+
+    ctr = vis.get_view_control()
+    ctr.set_lookat(cam_center.tolist())
+
+    front = (cam_center - cam_pos)
+    front = front / np.linalg.norm(front)
+
+    ctr.set_front(front.tolist())
+    ctr.set_up(cam_up.tolist())
+    ctr.set_zoom(0.0)
+
+    opt = vis.get_render_option()
+    opt.background_color = np.asarray([1.0, 1.0, 1.0])
+    opt.point_size = float(point_size)
+
+    vis.poll_events()
+    vis.update_renderer()
+
+    img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+    vis.destroy_window()
+
+    img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+
+    return img8 
+def render_triplet_from_pcds(partial_pcd_path,
+                             gt_pcd_path,
+                             out_path,
+                             predictor,
+                             asset,
+                             cd,
+                             f1,
+                             sel_type,
+                             include_error=True,
+                             panel_size=(512, 512),
+                             point_size=2.0,
+                             title_font_path=None
+                             ):
+    
+    assert os.path.exists(partial_pcd_path), f"Partial PCD {partial_pcd_path} not found"
+    assert os.path.exists(gt_pcd_path), f"GT PCD {gt_pcd_path} not found"
+
+    # Load PCDs
+    partial_pcd = o3d.io.read_point_cloud(partial_pcd_path)
+    gt_pcd = o3d.io.read_point_cloud(gt_pcd_path)
+
+    # Compute prediction
+    input = IO.get(partial_pcd_path).astype(np.float32)
+    gt_norm = IO.get(gt_pcd_path).astype(np.float32)
+
+    input, gt_norm, c = _norm_from_partial(gt_norm, input)
+    complete = predictor.predict(input)
+
+    # Denormalize
+    complete = complete * 2.0 + c
+
+    # Convert to open3d pcd
+    complete_pcd = o3d.geometry.PointCloud()
+    complete_pcd.points = o3d.utility.Vector3dVector(complete)
+    complete_pcd.colors = o3d.utility.Vector3dVector(np.tile([0.0, 1.0, 0.0], (complete.shape[0], 1)))
+
+    # Compute camera anchor
+    gt_np = np.asarray(gt_pcd.points)
+    if gt_np.size == 0:
+        center = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        radius = 1.0
+    else:
+        center = gt_np.mean(axis=0)
+        radius = float(np.max(np.linalg.norm(gt_np - center, axis=1)))
+        radius = radius if radius > 0 else 1.0
+
+    cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
+    cam_pos = center + cam_offset
+    cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    w, h = panel_size
+    
+
+    img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+
+    panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
+
+    pred_error_stats = None
+    if include_error: 
+        err_colors, dists = _compute_error_colormap(complete_pcd, gt_pcd, cmap='viridis', vmax=None)
+        pred_err_pcd = complete_pcd.clone()
+        pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
+        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+        panels.append(Image.fromarray(img_err))
+        pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists))}
+
+    num_panels = len(panels)
+    total_w = w * num_panels
+
+    try: 
+        if title_font_path and os.path.exists(title_font_path):
+            title_font = ImageFont.truetype(title_font_path,  20)
+            caption_font  = ImageFont.truetype(title_font_path,  15)
+        else:
+            try:
+                title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  20)
+                caption_font  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  15)
+            except Exception:
+                title_font = ImageFont.load_default()
+                caption_font = ImageFont.load_default()
+    except Exception:
+        title_font = ImageFont.load_default()
+        caption_font = ImageFont.load_default()
+
+    padding = 0
+    title_height = int(40)
+    caption_height = int(28)
+    footer_padding = 6
+
+    final_h = title_height + h + caption_height + footer_padding
+    out_image = Image.new("RGB", (total_w, final_h), (255, 255, 255))
+    draw = ImageDraw.Draw(out_image)
+
+    y_panels = title_height
+    for i, p in enumerate(panels):
+        out_image.paste(p, (i * w, y_panels))
+
+    # Title text
+    cd_txt = f"CD: {cd:.2f} mm" if cd is not None else "CD: N/A"
+    f1_txt = f"F1: {f1:.2f}" if f1 is not None else "F1: N/A"
+    if sel_type == "lowest":
+        sel_type = "Best"
+    elif sel_type == "median":
+        sel_type = "Median"
+    elif sel_type == "highest":
+        sel_type = "Worst"
+    else:
+        sel_type = "Unknown"
+
+    title_txt = f"{sel_type.capitalize()} {asset.capitalize()} ({cd_txt}, {f1_txt})"
+    title_w, title_h = draw.textsize(title_txt, font=title_font)
+    title_x = max(0, (total_w - title_h) // 2)
+    title_y = max(4, (title_height, title_h) // 2)
+    draw.text((title_x, title_y), title_txt, fill=(0, 0, 0), font=title_font)
+
+    caption_labels = ["Partial", "Prediction", "GT"]
+    if include_error:
+        caption_labels.append("Error")
+
+    for i, label in enumerate(caption_labels):
+        cap_w, cap_h = draw.textsize(label, font=caption_font)
+        cap_x = i * w + (w - cap_w) // 2
+        cap_y = y_panels + h + (caption_height - cap_h) // 2
+        draw.text((cap_x, cap_y), label, fill=(0, 0, 0), font=caption_font)
+
+    if include_error and pred_error_stats is not None:
+        err_label = f"Mean: {2*pred_error_stats['mean']:.2f} mm, Max: {2*pred_error_stats['max']:.2f} mm"
+        err_w, err_h = draw.textsize(err_label, font=caption_font)
+        err_panel_x = (num_panels - 1) * w
+        err_x = err_panel_x + w - err_w - 6
+        err_y = y_panels + h - err_h - 6
+        draw.text((err_x, err_y), err_label, fill=(0, 0, 0), font=caption_font)
+
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    out_image.save(out_path)
+
+    info = {
+        "center": center.tolist(),
+        "radius": radius,
+        "cam_pos": cam_pos.tolist(),
+        "panels": len(panels),
+        "pred_error": pred_error_stats
+    }
+
+    print(f"Render saved {out_path}")
+
+    return out_path, info
 
 def compute_samples(df, 
+                    predictor,
                     out_csv="selected_samples.csv",
                     job_out_dir="metrics",
                     metric_col="cd"
@@ -173,26 +383,32 @@ def compute_samples(df,
     picks_df.to_csv(out_csv, index=False)
     print(f"[RESULT] Saved {out_csv}")
 
-    # # Create render jobs
-    # job_paths = []
-    # for _, r in picks_df.iterrows():
-    #     sample_row = {
-    #         "asset": r["asset"],
-    #         "view_id": int(r["view_id"]),
-    #         "selection_metric": r["selection_metric"],
-    #         "selection_type": r["selection_type"],
-    #         "cd": float(r["cd"]) if "cd" in r else None,
-    #         "emd": float(r["emd"]) if "emd" in r else None,
-    #         "f1": float(r["f1"]) if "f1" in r else None
-    #     }
 
-    #     job_path = get_graphics(sample_row, job_out_dir=job_out_dir,
-    #                             note=f"selection_type={r['selection_type']}, metric={r['selection_metric']}")
-        
-    #     job_paths.append(job_path)
+    # Render and save as: asset_grid
+    grouped = picks_df.groupby("asset")
+    for asset, g in grouped:
+        sel_type = g["selection_type"].iloc[0]
+        cd = g["cd"].iloc[0]
+        f1 = g["f1"].iloc[0]
+        view_id = g["view_id"].iloc[0]
 
-    # print(f"[RESULT] Created {len(job_paths)} jobs")
+        partial_pcd_path = os.path.join("data", "NRG", "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd")
+        gt_pcd_path = os.path.join("data", "NRG", f"{asset}-{asset}-{view_id}.pcd")
 
+        out_path = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
+
+
+        render_triplet_from_pcds(partial_pcd_path,
+                                 gt_pcd_path,
+                                 out_path,
+                                 predictor,
+                                 asset,
+                                 cd=cd,
+                                 f1=f1,
+                                 sel_type=sel_type,
+                                 include_error=True,
+                                 panel_size=(512, 512),
+                                 point_size=2.0,)
     return picks_df
 
 
@@ -254,7 +470,7 @@ def main(cfg_path,
         gt0 = IO.get(file_path).astype(np.float32)
 
         print(f"partial {partial_path}, gt {file_path}")
-        gt, partial_norm = _norm_from_partial(gt0, partial)
+        gt, partial_norm, c = _norm_from_partial(gt0, partial)
         
         # Predictor returns points normalized
         complete = predictor.predict(partial_norm)
@@ -278,21 +494,21 @@ def main(cfg_path,
 
     # Plot
     save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_cd_boxplot.pdf"), title="Test Set CD by Asset", ylabel="CD (mm)")
-    save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
-    save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
+    #save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
+    #save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
 
     # get iqs
-    compute_samples(df,
+    compute_samples(df, predictor,
                     os.path.join(out_path, "results_by_cd.csv"),
                     os.path.join(out_path, "plots/graphics"),
                     metric_col="cd")
     
-    compute_samples(df,
+    compute_samples(df, predictor,
                     os.path.join(out_path, "results_by_f1.csv"),
                     os.path.join(out_path, "plots/graphics"),
                     metric_col="f1")
     
-    compute_samples(df,
+    compute_samples(df, predictor,
                 os.path.join(out_path, "results_by_emd.csv"),
                 os.path.join(out_path, "plots/graphics"),
                 metric_col="emd")
