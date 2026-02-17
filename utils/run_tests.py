@@ -112,9 +112,11 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
     return colors.astype(np.float64), dists
 
 def _render_pcd_to_image(pcd,
-                         cam_center,
+                         center,
                          cam_pos,
                          cam_up, 
+                         radius, 
+                         distance,
                          width=512,
                          height=512,
                          point_size=3.5,
@@ -125,23 +127,13 @@ def _render_pcd_to_image(pcd,
     vis.add_geometry(pcd)
 
     ctr = vis.get_view_control()
-    ctr.set_lookat(cam_center.tolist())
+    # ctr.set_lookat(cam_center.tolist())
 
    # front = (cam_center - cam_pos)
     #front = front / (np.linalg.norm(front) + 1e-12)
 
     #ctr.set_front(front.tolist())
     #ctr.set_up(cam_up.tolist())
-
-    bbox = pcd.get_axis_aligned_bounding_box()
-    center = bbox.get_center()
-    extent = bbox.get_extent()
-    radius = np.linalg.norm(extent) * 0.5
-    distance = 1.0 * radius 
-
-    cam_dir = np.array([1.0, -1.0, 0.6])
-    cam_dir = center + cam_dir * distance
-    cam_up = np.asarray([0.0, 0.0, 1.0])
 
     ctr.set_lookat(center.tolist())
     front = (center - cam_pos)
@@ -215,14 +207,24 @@ def render_triplet_from_pcds(partial_pcd_path,
         radius = radius if radius > 0 else 1.0
 
     cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
+
     cam_pos = center + cam_offset
     cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
     w, h = panel_size
-    
-    img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
-    img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
-    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    bbox = gt_pcd.get_axis_aligned_bounding_box()
+    center = bbox.get_center()
+    extent = bbox.get_extent()
+    radius = np.linalg.norm(extent) * 0.5
+    distance = 1.5 * radius 
+
+    # cam_dir = np.array([1.0, -1.0, 0.6])
+    # cam_dir = center + cam_dir * distance
+
+    cam_up = np.asarray([0.0, 0.0, 1.0])
+    img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, radius, distance, cam_up, width=w, height=h, point_size=point_size)
 
     panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
 
@@ -234,7 +236,7 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
-        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
 
@@ -300,7 +302,7 @@ def render_triplet_from_pcds(partial_pcd_path,
 
     caption_labels = ["Part.", "Pred.", "GT"]
     if include_error:
-        caption_labels.append(f"Err. (mean={2*pred_error_stats['mean']:.2f} mm, max={2 * pred_error_stats['max']:.2f} mm, min{2 * pred_error_stats['min']:.2f})")
+        caption_labels.append(f"Err. (mean={2*pred_error_stats['mean']:.2f} mm, max={2 * pred_error_stats['max']:.2f} mm)")
 
     for i, label in enumerate(caption_labels):
         bbox = draw.textbbox((0, 0), label, font=caption_font)
