@@ -117,7 +117,7 @@ def _render_pcd_to_image(pcd,
                          cam_up, 
                          width=512,
                          height=512,
-                         point_size=2.0,
+                         point_size=3.5,
                          visible=False
                          ):
     vis = o3d.visualization.Visualizer()
@@ -127,12 +127,30 @@ def _render_pcd_to_image(pcd,
     ctr = vis.get_view_control()
     ctr.set_lookat(cam_center.tolist())
 
-    front = (cam_center - cam_pos)
-    front = front / (np.linalg.norm(front) + 1e-12)
+   # front = (cam_center - cam_pos)
+    #front = front / (np.linalg.norm(front) + 1e-12)
 
+    #ctr.set_front(front.tolist())
+    #ctr.set_up(cam_up.tolist())
+
+    bbox = pcd.get_axis_aligned_bounding_box()
+    center = bbox.get_center()
+    extent = bbox.get_extent()
+    radius = np.linalg.norm(extent) * 0.5
+    distance = 1.0 * radius 
+
+    cam_dir = np.array([1.0, -1.0, 0.6])
+    cam_dir = center + cam_dir * distance
+    cam_up = np.asarray([0.0, 0.0, 1.0])
+
+    ctr.set_lookat(center.tolist())
+    front = (center - cam_pos)
+    front /= np.linalg.norm(front)
     ctr.set_front(front.tolist())
     ctr.set_up(cam_up.tolist())
-    ctr.set_zoom(0.6)
+    
+    zoom = 0.85 * (radius / distance)
+    ctr.set_zoom(float(zoom))
 
     opt = vis.get_render_option()
     opt.background_color = np.asarray([1.0, 1.0, 1.0])
@@ -218,7 +236,7 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
         img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
         panels.append(Image.fromarray(img_err))
-        pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists))}
+        pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
 
 
     # Debug
@@ -282,7 +300,7 @@ def render_triplet_from_pcds(partial_pcd_path,
 
     caption_labels = ["Part.", "Pred.", "GT"]
     if include_error:
-        caption_labels.append(f"Err. (Mean={2*pred_error_stats['mean']:.2f} mm, Max={2 * pred_error_stats['max']:.2f} mm)")
+        caption_labels.append(f"Err. (mean={2*pred_error_stats['mean']:.2f} mm, max={2 * pred_error_stats['max']:.2f} mm, min{2 * pred_error_stats['min']:.2f})")
 
     for i, label in enumerate(caption_labels):
         bbox = draw.textbbox((0, 0), label, font=caption_font)
