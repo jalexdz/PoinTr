@@ -137,6 +137,7 @@ def _render_pcd_to_image(pcd,
     img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
     return img8 
+
 def render_triplet_from_pcds(partial_pcd_path,
                              gt_pcd_path,
                              out_path,
@@ -253,7 +254,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     else:
         sel_type = "Unknown"
 
-    title_txt = f"{sel_type.capitalize()} {asset.capitalize()} ({cd_txt}, {f1_txt})"
+    title_txt = f"{asset.capitalize()} {sel_type.capitalize()} ({cd_txt}, {f1_txt})"
     bbox = draw.textbbox((0, 0), title_txt, font=title_font)
     title_w = bbox[2] - bbox[0]
     title_h = bbox[3] - bbox[1]
@@ -537,9 +538,8 @@ if __name__ == "__main__":
         help = 'Path to txt file containing list of test PCDs')
     parser.add_argument(
         "--out_path",
-        required=True,
         type = str, 
-        default="results",
+        default="./results",
         help = 'Output path')
     args = parser.parse_args()
 
