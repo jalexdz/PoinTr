@@ -170,7 +170,7 @@ def render_triplet_from_pcds(partial_pcd_path,
                              sel_type,
                              include_error=True,
                              panel_size=(512, 512),
-                             point_size=2.0,
+                             point_size=3.0,
                              title_font_path=None
                              ):
     
@@ -216,7 +216,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     center = bbox.get_center()
     extent = bbox.get_extent()
     radius = np.linalg.norm(extent) * 0.5
-    distance = 1.5 * radius 
+    distance = 1.1 * radius 
 
     # cam_dir = np.array([1.0, -1.0, 0.6])
     # cam_dir = center + cam_dir * distance
@@ -236,7 +236,7 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
-        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=3.5)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
 
