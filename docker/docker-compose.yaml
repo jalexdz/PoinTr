@@ -24,13 +24,18 @@ services:
       DISPLAY: ${DISPLAY}
       QT_X11_NO_MITSHM: 1
       XAUTHORITY: /root/.Xauthority
+      XDG_RUNTIME_DIR: /run/user/0
 
     volumes:
       - ..:/workspace:cached
       - ${HOST_DATA_ROOT:-$HOME/datasets}:/data:ro
       - adapointr_cache:/root/.cache
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw     
-      - ${HOME}/.Xauthority:/root/.Xauthority:ro  
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${HOME}/.Xauthority:/root/.Xauthority:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix
+
+    tmpfs:
+        - /run/user/0
 
     tty: true
     user: root #${UID:-1000}:${GID:-1000}

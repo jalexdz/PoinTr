@@ -62,6 +62,9 @@ print("pointnet2_ops OK")
 PY
 
 ENV PYTHONPATH=/workspace DATA_ROOT=/data
+ENV XDG_RUNTIME_DIR=/run/user/0
+RUN mkdir -p /run/user/0 \
+    && chmod 0700 /run/user/0
 
 ARG USER_ID=1000
 ARG GROUP_ID=1000
