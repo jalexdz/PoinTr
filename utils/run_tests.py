@@ -15,6 +15,17 @@ from tools.predictor import AdaPoinTrPredictor
 from extensions.chamfer_dist import ChamferDistanceL1
 from utils.metrics import Metrics
 
+def debug_pcd(pcd, name="pcd"):
+    pts = np.asarray(pcd.points)
+    cols = np.asarray(pcd.colors) if pcd.has_colors() else np.empty((0, 3))
+
+    print(f"[DEBUG] {name} pts.shape: {pts.shape}, cols.shape: {cols.shape}")
+    if pts.size:
+        print(f"[DEBUG] {name} min: {np.min(pts, axis=0)}, max: {np.max(pts, axis=0)}, mean: {np.mean(pts, axis=0)}")
+    if cols.size:
+        print(f"[DEBUG] {name} colors min: {np.min(cols, axis=0)}, max: {np.max(cols, axis=0)}, unique sample: {cols[:3]}")
+ 
+        
 def _norm_from_partial(gt, partial):
     centroid = np.mean(partial, axis=0)
     p0 = partial - centroid
@@ -77,7 +88,6 @@ def save_boxplot(df, metric, out_path, title, ylabel):
     plt.savefig(out_path, dpi=600, bbox_inches='tight')
     plt.close()
 
-
 def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
     '''Return Nx3 colors for pred ponts = nearest distance to GT mapped to colormap'''
     pred_np =  np.asarray(pred.points)
@@ -137,6 +147,7 @@ def _render_pcd_to_image(pcd,
     img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
     return img8 
+
 def render_triplet_from_pcds(partial_pcd_path,
                              gt_pcd_path,
                              out_path,
@@ -207,6 +218,13 @@ def render_triplet_from_pcds(partial_pcd_path,
         img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists))}
+
+
+    # Debug
+    debug_pcd(partial_pcd, "partial")
+    debug_pcd(gt_pcd, "gt")
+    debug_pcd(complete_pcd, "complete")
+    print("[DEBUG] center:", center, "cam_pos:", cam_pos, "cam_up:", cam_up)
 
     num_panels = len(panels)
     total_w = w * num_panels
