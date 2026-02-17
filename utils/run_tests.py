@@ -128,15 +128,17 @@ def _render_pcd_to_image(pcd,
     ctr.set_lookat(cam_center.tolist())
 
     front = (cam_center - cam_pos)
-    front = front / np.linalg.norm(front)
+    front = front / (np.linalg.norm(front) + 1e-12)
 
     ctr.set_front(front.tolist())
     ctr.set_up(cam_up.tolist())
-    ctr.set_zoom(0.0)
+    ctr.set_zoom(0.6)
 
     opt = vis.get_render_option()
     opt.background_color = np.asarray([1.0, 1.0, 1.0])
     opt.point_size = float(point_size)
+
+    vis.update_geometry(pcd)
 
     vis.poll_events()
     vis.update_renderer()
@@ -200,7 +202,6 @@ def render_triplet_from_pcds(partial_pcd_path,
 
     w, h = panel_size
     
-
     img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
     img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
     img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
