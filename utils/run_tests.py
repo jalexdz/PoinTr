@@ -257,7 +257,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     bbox = draw.textbbox((0, 0), title_txt, font=title_font)
     title_w = bbox[2] - bbox[0]
     title_h = bbox[3] - bbox[1]
-    title_x = max(0, (total_w - title_h) // 2)
+    title_x = max(0, (total_w - title_w) // 2)
     title_y = max(4, (title_height - title_h) // 2)
     draw.text((title_x, title_y), title_txt, fill=(0, 0, 0), font=title_font)
 
