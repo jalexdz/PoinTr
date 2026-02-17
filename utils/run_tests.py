@@ -185,7 +185,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     input = IO.get(partial_pcd_path).astype(np.float32)
     gt_norm = IO.get(gt_pcd_path).astype(np.float32)
 
-    input, gt_norm, c = _norm_from_partial(gt_norm, input)
+    gt_norm, input, c = _norm_from_partial(gt_norm, input)
     complete = predictor.predict(input)
 
     # Denormalize
