@@ -98,7 +98,7 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
 
     norm = np.clip(dists / float(vmax), 0.0, 1.0)
     cmap_func = plt.get_cmap(cmap)
-    colors = cmap_func(norm)
+    colors = cmap_func(norm)[:, :3]
     return colors.astype(np.float64), dists
 
 def _render_pcd_to_image(pcd,
@@ -199,9 +199,10 @@ def render_triplet_from_pcds(partial_pcd_path,
     pred_error_stats = None
     if include_error: 
         err_colors, dists = _compute_error_colormap(complete_pcd, gt_pcd, cmap='viridis', vmax=None)
+        
         complete_pts = np.asarray(complete_pcd.points)
         pred_err_pcd = o3d.geometry.PointCloud()
-        pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts)
+        pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
         img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
         panels.append(Image.fromarray(img_err))
@@ -247,32 +248,31 @@ def render_triplet_from_pcds(partial_pcd_path,
         sel_type = "Median"
     elif sel_type == "highest":
         sel_type = "Worst"
+    elif "outlier" in sel_type:
+        sel_type = sel_type.capitalize()
     else:
         sel_type = "Unknown"
 
     title_txt = f"{sel_type.capitalize()} {asset.capitalize()} ({cd_txt}, {f1_txt})"
-    title_w, title_h = draw.textsize(title_txt, font=title_font)
+    bbox = draw.textbbox((0, 0), title_txt, font=title_font)
+    title_w = bbox[2] - bbox[0]
+    title_h = bbox[3] - bbox[1]
     title_x = max(0, (total_w - title_h) // 2)
-    title_y = max(4, (title_height, title_h) // 2)
+    title_y = max(4, (title_height - title_h) // 2)
     draw.text((title_x, title_y), title_txt, fill=(0, 0, 0), font=title_font)
 
     caption_labels = ["Part.", "Pred.", "GT"]
     if include_error:
-        caption_labels.append("Error")
+        caption_labels.append(f"Err. (Mean={2*pred_error_stats['mean']:.2f} mm, Max={2 * pred_error_stats['max']:.2f} mm)")
 
     for i, label in enumerate(caption_labels):
-        cap_w, cap_h = draw.textsize(label, font=caption_font)
+        bbox = draw.textbbox((0, 0), label, font=caption_font)
+        cap_w = bbox[2] - bbox[0]
+        cap_h = bbox[3] - bbox[1]
+        
         cap_x = i * w + (w - cap_w) // 2
         cap_y = y_panels + h + (caption_height - cap_h) // 2
         draw.text((cap_x, cap_y), label, fill=(0, 0, 0), font=caption_font)
-
-    if include_error and pred_error_stats is not None:
-        err_label = f"Mean: {2*pred_error_stats['mean']:.2f} mm, Max: {2*pred_error_stats['max']:.2f} mm"
-        err_w, err_h = draw.textsize(err_label, font=caption_font)
-        err_panel_x = (num_panels - 1) * w
-        err_x = err_panel_x + w - err_w - 6
-        err_y = y_panels + h - err_h - 6
-        draw.text((err_x, err_y), err_label, fill=(0, 0, 0), font=caption_font)
 
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -388,18 +388,22 @@ def compute_samples(df,
     # Render and save as: asset_grid
     grouped = picks_df.groupby("asset")
     for asset, g in grouped:
-        sel_type = g["selection_type"].iloc[0]
-        cd = g["cd"].iloc[0]
-        f1 = g["f1"].iloc[0]
-        view_id = g["view_id"].iloc[0]
+        outlier_i = 1
+        for _, row in g.iterrows():
+            sel_type = row["selection_type"]
+            cd = float(row["cd"])
+            f1 = float(row["f1"])
+            view_id = int(row["view_id"])
 
-        partial_pcd_path = os.path.join("data", "NRG", "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd")
-        gt_pcd_path = os.path.join("data", "NRG", "NRG_pc", f"{asset}-{asset}-{view_id}.pcd")
+            partial_pcd_path = os.path.join("data", "NRG", "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd")
+            gt_pcd_path = os.path.join("data", "NRG", "NRG_pc", f"{asset}-{asset}-{view_id}.pcd")
 
-        out_path = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
+            out_path = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
+            if sel_type=="outlier":
+                sel_type = f"outlier {outlier_i}"
+                outlier_i = outlier_i + 1
 
-
-        render_triplet_from_pcds(partial_pcd_path,
+            render_triplet_from_pcds(partial_pcd_path,
                                  gt_pcd_path,
                                  out_path,
                                  predictor,
@@ -495,8 +499,8 @@ def main(cfg_path,
 
     # Plot
     save_boxplot(df, "cd", os.path.join(out_path, "plots/boxplots/test_cd_boxplot.pdf"), title="Test Set CD by Asset", ylabel="CD (mm)")
-    #save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
-    #save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
+    save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
+    save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
 
     # get iqs
     compute_samples(df, predictor,
@@ -504,15 +508,15 @@ def main(cfg_path,
                     os.path.join(out_path, "plots/graphics"),
                     metric_col="cd")
     
-    compute_samples(df, predictor,
-                    os.path.join(out_path, "results_by_f1.csv"),
-                    os.path.join(out_path, "plots/graphics"),
-                    metric_col="f1")
+    #compute_samples(df, predictor,
+     #               os.path.join(out_path, "results_by_f1.csv"),
+      #              os.path.join(out_path, "plots/graphics"),
+       #             metric_col="f1")
     
-    compute_samples(df, predictor,
-                os.path.join(out_path, "results_by_emd.csv"),
-                os.path.join(out_path, "plots/graphics"),
-                metric_col="emd")
+   # compute_samples(df, predictor,
+    #            os.path.join(out_path, "results_by_emd.csv"),
+     #           os.path.join(out_path, "plots/graphics"),
+      #          metric_col="emd")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
