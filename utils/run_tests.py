@@ -224,7 +224,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     cam_up = np.asarray([0.0, 0.0, 1.0])
     img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
     img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
-    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, radius, distance, cam_up, width=w, height=h, point_size=point_size)
+    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
 
     panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
 
