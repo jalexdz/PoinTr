@@ -191,39 +191,97 @@ def render_triplet_from_pcds(partial_pcd_path,
     complete_pcd.points = o3d.utility.Vector3dVector(complete)
     complete_pcd.colors = o3d.utility.Vector3dVector(np.tile([0.0, 1.0, 0.0], (complete.shape[0], 1)))
 
-    # Compute camera anchor
-    gt_np = np.asarray(gt_pcd.points)
-    if gt_np.size == 0:
-        center = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-        radius = 1.0
-    else:
-        center = gt_np.mean(axis=0)
-        radius = float(np.max(np.linalg.norm(gt_np - center, axis=1)))
-        radius = radius if radius > 0 else 1.0
+    # # Compute camera anchor
+    # gt_np = np.asarray(gt_pcd.points)
+    # if gt_np.size == 0:
+    #     center = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    #     radius = 1.0
+    # else:
+    #     center = gt_np.mean(axis=0)
+    #     radius = float(np.max(np.linalg.norm(gt_np - center, axis=1)))
+    #     radius = radius if radius > 0 else 1.0
     
-    w, h = panel_size
+    # w, h = panel_size
 
     # Align partial and completion to gt centroid
-    partial_cent = partial_pts.mean(axis=0)
-    complete_cent = complete.mean(axis=0)
-    gt_cent = gt_pts.mean(axis=0)
+    # partial_cent = partial_pts.mean(axis=0)
+    # complete_cent = complete.mean(axis=0)
+    # gt_cent = gt_pts.mean(axis=0)
 
-    partial_pcd = partial_pcd.translate(gt_cent - partial_cent)
-    complete_pcd = complete_pcd.translate(gt_cent - complete_cent)
+    # partial_pcd = partial_pcd.translate(gt_cent - partial_cent)
+    # complete_pcd = complete_pcd.translate(gt_cent - complete_cent)
 
+    # bbox = gt_pcd.get_axis_aligned_bounding_box()
+    # center = bbox.get_center()
+    # extent = bbox.get_extent()
+    # radius = float(np.linalg.norm(extent) * 0.5)
+    # distance = 1.1 * radius 
+
+    # cam_offset = np.array([0.8 * radius, -1.0 * radius, 1.6 * radius], dtype=np.float64)
+    # cam_pos = center + cam_offset
+    # cam_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+    # img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    # img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    # img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+
+    # panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
     bbox = gt_pcd.get_axis_aligned_bounding_box()
     center = bbox.get_center()
     extent = bbox.get_extent()
     radius = float(np.linalg.norm(extent) * 0.5)
-    distance = 1.1 * radius 
+    radius = radius if radius > 0 else 1.0
+    distance = 1.5 * radius
 
+    # pick a 3/4 top view (positive Z so you see the top)
     cam_offset = np.array([0.8 * radius, -1.0 * radius, 1.6 * radius], dtype=np.float64)
     cam_pos = center + cam_offset
     cam_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
-    img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
-    img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
-    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
 
+    # Debug prints (optional)
+    print("CAM anchor center:", center, "radius:", radius)
+    print("cam_pos:", cam_pos, "cam_up:", cam_up)
+
+    # Render helper that explicitly sets camera parameters (do not change the cloud)
+    def _render_pcd_with_fixed_camera(pcd, center, cam_pos, cam_up, width=512, height=512, point_size=3.5, visible=False):
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=width, height=height, visible=visible)
+        vis.add_geometry(pcd)
+        ctr = vis.get_view_control()
+
+        # compute normalized front vector from camera -> center
+        front = (center - cam_pos).astype(np.float64)
+        front /= (np.linalg.norm(front) + 1e-12)
+
+        # Set camera explicitly — this makes the view deterministic across pcds
+        try:
+            ctr.set_lookat(center.tolist())
+            ctr.set_front(front.tolist())
+            ctr.set_up(cam_up.tolist())
+        except Exception:
+            # older Open3D versions sometimes behave differently — ignore and keep going
+            pass
+
+        # deterministic zoom; tweak 0.6-0.85 depending how tightly you want to frame
+        ctr.set_zoom(0.75)
+
+        opt = vis.get_render_option()
+        opt.background_color = np.asarray([1.0, 1.0, 1.0])
+        opt.point_size = float(point_size)
+
+        vis.update_geometry(pcd)
+        vis.poll_events()
+        vis.update_renderer()
+        img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+        vis.destroy_window()
+        return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+
+    # Use the function on the raw point clouds (no translation)
+    w, h = panel_size
+    img_partial  = _render_pcd_with_fixed_camera(partial_pcd,  center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    img_complete = _render_pcd_with_fixed_camera(complete_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    img_gt       = _render_pcd_with_fixed_camera(gt_pcd,       center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+
+    # Then combine panels exactly like you already do
     panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
 
     pred_error_stats = None
@@ -234,7 +292,7 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
-        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=3.5)
+        img_err = _render_pcd_with_fixed_camera(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=3.5)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
 
