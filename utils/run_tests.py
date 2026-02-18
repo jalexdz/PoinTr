@@ -127,9 +127,9 @@ def _render_pcd_to_image(pcd,
     vis.add_geometry(pcd)
 
     ctr = vis.get_view_control()
-    # ctr.set_lookat(cam_center.tolist())
+    #ctr.set_lookat(cam_center.tolist())
 
-   # front = (cam_center - cam_pos)
+    #front = (cam_center - cam_pos)
     #front = front / (np.linalg.norm(front) + 1e-12)
 
     #ctr.set_front(front.tolist())
@@ -141,7 +141,7 @@ def _render_pcd_to_image(pcd,
     ctr.set_front(front.tolist())
     ctr.set_up(cam_up.tolist())
     
-    zoom = 0.85 * (radius / distance)
+    zoom = .75 #2.0 * (radius / distance)
     ctr.set_zoom(float(zoom))
 
     opt = vis.get_render_option()
@@ -206,19 +206,23 @@ def render_triplet_from_pcds(partial_pcd_path,
         radius = float(np.max(np.linalg.norm(gt_np - center, axis=1)))
         radius = radius if radius > 0 else 1.0
 
-    cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
+    #cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
 
-    cam_pos = center + cam_offset
-    cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+   # cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
     w, h = panel_size
     bbox = gt_pcd.get_axis_aligned_bounding_box()
     center = bbox.get_center()
     extent = bbox.get_extent()
-    radius = np.linalg.norm(extent) * 0.5
-    distance = 1.1 * radius 
 
-    # cam_dir = np.array([1.0, -1.0, 0.6])
+    bbox_margin = 0.05
+    extent = extent * (1.0 + bbox_margin)
+    radius = float(np.linalg.norm(extent) * 0.5)
+   # distance = 1.1 * radius 
+    cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
+    cam_pos = center + cam_offset
+    distance = float(np.linalg.norm(cam_offset))    
+# cam_dir = np.array([1.0, -1.0, 0.6])
     # cam_dir = center + cam_dir * distance
 
     cam_up = np.asarray([0.0, 0.0, 1.0])
