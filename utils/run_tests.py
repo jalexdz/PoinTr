@@ -46,7 +46,7 @@ def intrinsics_from_fov(width, height, fov_deg):
     fx = fy
     cx = width / 2.0
     cy = height / 2.0
-    intr = o3dcamera.PinholeCameraIntrinsics(int(width), int(height), float(fx), float(fy), float(cx), float(cy))
+    intr = o3dcamera.PinholeCameraIntrinsic(int(width), int(height), float(fx), float(fy), float(cx), float(cy))
     return intr
         
 def _norm_from_partial(gt, partial):
@@ -150,9 +150,9 @@ def _render_pcd_with_params(pcd,
 
     ctr = vis.get_view_control()
 
-    param = o3dcamera.PinHoleCameraParameters()
-    param.intrinsics = intrinsics_from_fov(width, height, fov_deg)
-    param.extrinsics = lookat_extrinsic(np.asarray(eye), np.asarray(center), np.asarray(up))
+    param = o3dcamera.PinholeCameraParameters()
+    param.intrinsic = intrinsics_from_fov(width, height, fov_deg)
+    param.extrinsic = lookat_extrinsic(np.asarray(eye), np.asarray(center), np.asarray(up))
 
     ctr.convert_from_pinhole_camera_parameters(param, allow_arbitrary=True)
 
@@ -296,9 +296,9 @@ def render_triplet_from_pcds(partial_pcd_path,
 #     # cam_dir = center + cam_dir * distance
 
 #     cam_up = np.asarray([0.0, 0.0, 1.0])
-    img_partial = render_pcd_with_params(partial_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
-    img_complete = render_pcd_with_params(complete_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
-    img_gt = render_pcd_with_params(gt_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
+    img_partial = _render_pcd_with_params(partial_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
+    img_complete = _render_pcd_with_params(complete_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
+    img_gt = _render_pcd_with_params(gt_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
     # img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
     # img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
     # img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
@@ -313,7 +313,8 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
-        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=3.5)
+        #img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=3.5)
+        img_err = _render_pcd_with_params(pred_err_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=3.5, visible=False)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
 
@@ -390,7 +391,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     info = {
         "center": center.tolist(),
         "radius": radius,
-        "cam_pos": cam_pos.tolist(),
+        #"cam_pos": cam_pos.tolist(),
         "panels": len(panels),
         "pred_error": pred_error_stats
     }
