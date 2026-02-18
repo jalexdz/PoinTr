@@ -116,20 +116,15 @@ def _render_pcd_to_image(pcd,
     vis.add_geometry(pcd)
 
     ctr = vis.get_view_control()
-    # ctr.set_lookat(cam_center.tolist())
-
-   # front = (cam_center - cam_pos)
-    #front = front / (np.linalg.norm(front) + 1e-12)
-
-    #ctr.set_front(front.tolist())
-    #ctr.set_up(cam_up.tolist())
-
-    # ctr.set_lookat(center.tolist())
-    # front = (center - cam_pos)
-    # front /= np.linalg.norm(front)
-    # ctr.set_front(front.tolist())
-    # ctr.set_up(cam_up.tolist())
     
+    front = (center - cam_pos).astype(np.float64)
+    norm = np.linalg.norm(front) + 1e-12
+    front = front / norm
+
+    ctr.set_lookat(center.tolist())
+    ctr.set_front(front.tolist())
+    ctr.set_up(cam_up.tolist())
+
     zoom = 0.85 * (radius / distance)
     ctr.set_zoom(float(zoom))
 
@@ -169,7 +164,18 @@ def render_triplet_from_pcds(partial_pcd_path,
     # Load PCDs
     partial_pcd = o3d.io.read_point_cloud(partial_pcd_path)
     gt_pcd = o3d.io.read_point_cloud(gt_pcd_path)
+    
+    partial_pts = np.asarray(partial_pcd.points)
+    gt_pts = np.asarray(gt_pcd.points)
 
+    print("PARTIAL: n_pts", partial_pts.shape[0],
+      "centroid", partial_pts.mean(axis=0) if partial_pts.size else None,
+      "extent", (partial_pts.max(axis=0)-partial_pts.min(axis=0)) if partial_pts.size else None)
+ 
+    print("GT:      n_pts", gt_pts.shape[0],
+      "centroid", gt_pts.mean(axis=0) if gt_pts.size else None,
+      "extent", (gt_pts.max(axis=0)-gt_pts.min(axis=0)) if gt_pts.size else None)
+    
     # Compute prediction
     input = IO.get(partial_pcd_path).astype(np.float32)
     gt_norm = IO.get(gt_pcd_path).astype(np.float32)
@@ -194,23 +200,26 @@ def render_triplet_from_pcds(partial_pcd_path,
         center = gt_np.mean(axis=0)
         radius = float(np.max(np.linalg.norm(gt_np - center, axis=1)))
         radius = radius if radius > 0 else 1.0
-
-    cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
-
-    cam_pos = center + cam_offset
-    cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-
+    
     w, h = panel_size
+
+    # Align partial and completion to gt centroid
+    partial_cent = partial_pts.mean(axis=0)
+    complete_cent = complete.mean(axis=0)
+    gt_cent = gt_pts.mean(axis=0)
+
+    partial_pcd = partial_pcd.translate(gt_cent - partial_cent)
+    complete_pcd = complete_pcd.translate(gt_cent - complete_cent)
+
     bbox = gt_pcd.get_axis_aligned_bounding_box()
     center = bbox.get_center()
     extent = bbox.get_extent()
-    radius = np.linalg.norm(extent) * 0.5
+    radius = float(np.linalg.norm(extent) * 0.5)
     distance = 1.1 * radius 
 
-    # cam_dir = np.array([1.0, -1.0, 0.6])
-    # cam_dir = center + cam_dir * distance
-
-    cam_up = np.asarray([0.0, 0.0, 1.0])
+    cam_offset = np.array([0.8 * radius, -1.0 * radius, 1.6 * radius], dtype=np.float64)
+    cam_pos = center + cam_offset
+    cam_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
     img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
     img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
     img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
