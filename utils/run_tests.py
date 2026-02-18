@@ -143,6 +143,95 @@ def _render_pcd_to_image(pcd,
     img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
     return img8 
+def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
+                                fov_deg=60.0,
+                                width=512, height=512,
+                                point_size=3.5,
+                                visible=False):
+    """
+    Create a PinholeCameraParameters sampled from a GT visualizer. This returns
+    a PinholeCameraParameters object that can be reused on other Visualizers so
+    they use identical extrinsic+intrinsic.
+    """
+    # compute bbox anchor
+    bbox = gt_pcd.get_axis_aligned_bounding_box()
+    center = bbox.get_center()
+    extent = bbox.get_extent()
+    radius = float(np.linalg.norm(extent) * 0.5)
+    radius = radius if radius > 0 else 1.0
+
+    cam_offset = np.array([cam_offset_factor[0] * radius,
+                           cam_offset_factor[1] * radius,
+                           cam_offset_factor[2] * radius], dtype=np.float64)
+    cam_pos = center + cam_offset
+    cam_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+
+    # Create a short-lived visualizer with the GT cloud to set a camera
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(width=width, height=height, visible=visible)
+    vis.add_geometry(gt_pcd)
+
+    ctr = vis.get_view_control()
+
+    # compute normalized front vector (camera -> center)
+    front = (center - cam_pos).astype(np.float64)
+    front /= (np.linalg.norm(front) + 1e-12)
+
+    # Set the camera explicitly
+    ctr.set_lookat(center.tolist())
+    ctr.set_front(front.tolist())
+    ctr.set_up(cam_up.tolist())
+
+    # optionally tune zoom a bit; this is still needed to get proper scale
+    ctr.set_zoom(0.75)
+
+    # convert to pinhole parameters (this captures the extrinsic matrix used)
+    params = ctr.convert_to_pinhole_camera_parameters()
+
+    # Replace intrinsics with a controlled intrinsic using a simple fov model
+    # compute fx/fy from requested fov and image width
+    fov_rad = np.deg2rad(float(fov_deg))
+    fx = fy = 0.5 * width / np.tan(0.5 * fov_rad)
+    cx = width * 0.5
+    cy = height * 0.5
+    intr = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
+    params.intrinsic = intr
+
+    # clean up
+    vis.destroy_window()
+
+    # Return anchor info so caller can reuse center/radius if needed
+    anchor = {"params": params, "center": center, "radius": radius, "cam_pos": cam_pos, "cam_up": cam_up}
+    return anchor
+def _render_with_camera_params(pcd, params, width=512, height=512, point_size=3.5, visible=False):
+    """
+    Render a single point cloud using the provided PinholeCameraParameters.
+    """
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(width=width, height=height, visible=visible)
+    vis.add_geometry(pcd)
+
+    ctr = vis.get_view_control()
+    # apply the previously-captured parameters exactly
+    try:
+        ctr.convert_from_pinhole_camera_parameters(params)
+    except Exception:
+        # fallback: if convert_from fails for some Open3D installs, try set_lookat/front/up
+        cam = params.extrinsic
+        # still attempt approximate fallback
+        # (we expect convert_from_pinhole_camera_parameters to work in most setups)
+        pass
+
+    opt = vis.get_render_option()
+    opt.background_color = np.asarray([1.0, 1.0, 1.0])
+    opt.point_size = float(point_size)
+
+    vis.update_geometry(pcd)
+    vis.poll_events()
+    vis.update_renderer()
+    img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+    vis.destroy_window()
+    return (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
 def render_triplet_from_pcds(partial_pcd_path,
                              gt_pcd_path,
@@ -242,44 +331,56 @@ def render_triplet_from_pcds(partial_pcd_path,
     print("cam_pos:", cam_pos, "cam_up:", cam_up)
 
     # Render helper that explicitly sets camera parameters (do not change the cloud)
-    def _render_pcd_with_fixed_camera(pcd, center, cam_pos, cam_up, width=512, height=512, point_size=3.5, visible=False):
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(width=width, height=height, visible=visible)
-        vis.add_geometry(pcd)
-        ctr = vis.get_view_control()
+    # def _render_pcd_with_fixed_camera(pcd, center, cam_pos, cam_up, width=512, height=512, point_size=3.5, visible=False):
+    #     vis = o3d.visualization.Visualizer()
+    #     vis.create_window(width=width, height=height, visible=visible)
+    #     vis.add_geometry(pcd)
+    #     ctr = vis.get_view_control()
 
-        # compute normalized front vector from camera -> center
-        front = (center - cam_pos).astype(np.float64)
-        front /= (np.linalg.norm(front) + 1e-12)
+    #     # compute normalized front vector from camera -> center
+    #     front = (center - cam_pos).astype(np.float64)
+    #     front /= (np.linalg.norm(front) + 1e-12)
 
-        # Set camera explicitly — this makes the view deterministic across pcds
-        try:
-            ctr.set_lookat(center.tolist())
-            ctr.set_front(front.tolist())
-            ctr.set_up(cam_up.tolist())
-        except Exception:
-            # older Open3D versions sometimes behave differently — ignore and keep going
-            pass
+    #     # Set camera explicitly — this makes the view deterministic across pcds
+    #     try:
+    #         ctr.set_lookat(center.tolist())
+    #         ctr.set_front(front.tolist())
+    #         ctr.set_up(cam_up.tolist())
+    #     except Exception:
+    #         # older Open3D versions sometimes behave differently — ignore and keep going
+    #         pass
 
-        # deterministic zoom; tweak 0.6-0.85 depending how tightly you want to frame
-        ctr.set_zoom(0.75)
+    #     # deterministic zoom; tweak 0.6-0.85 depending how tightly you want to frame
+    #     ctr.set_zoom(0.75)
 
-        opt = vis.get_render_option()
-        opt.background_color = np.asarray([1.0, 1.0, 1.0])
-        opt.point_size = float(point_size)
+    #     opt = vis.get_render_option()
+    #     opt.background_color = np.asarray([1.0, 1.0, 1.0])
+    #     opt.point_size = float(point_size)
 
-        vis.update_geometry(pcd)
-        vis.poll_events()
-        vis.update_renderer()
-        img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
-        vis.destroy_window()
-        return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    #     vis.update_geometry(pcd)
+    #     vis.poll_events()
+    #     vis.update_renderer()
+    #     img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+    #     vis.destroy_window()
+    #     return (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
     # Use the function on the raw point clouds (no translation)
     w, h = panel_size
-    img_partial  = _render_pcd_with_fixed_camera(partial_pcd,  center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
-    img_complete = _render_pcd_with_fixed_camera(complete_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
-    img_gt       = _render_pcd_with_fixed_camera(gt_pcd,       center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    anchor = _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
+                                        fov_deg=60.0, width=w, height=h,
+                                        point_size=point_size, visible=False)
+    params = anchor['params']
+
+    # 2) render each cloud using the exact same params (no translations)
+    img_partial  = _render_with_camera_params(partial_pcd,  params, width=w, height=h, point_size=point_size, visible=False)
+    img_complete = _render_with_camera_params(complete_pcd, params, width=w, height=h, point_size=point_size, visible=False)
+    img_gt       = _render_with_camera_params(gt_pcd,       params, width=w, height=h, point_size=point_size, visible=False)
+
+    # Now compose panels as you already do
+    panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
+    # img_partial  = _render_pcd_with_fixed_camera(partial_pcd,  center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    # img_complete = _render_pcd_with_fixed_camera(complete_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
+    # img_gt       = _render_pcd_with_fixed_camera(gt_pcd,       center, cam_pos, cam_up, width=w, height=h, point_size=point_size)
 
     # Then combine panels exactly like you already do
     panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
@@ -292,7 +393,7 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
-        img_err = _render_pcd_with_fixed_camera(pred_err_pcd, center, cam_pos, cam_up, width=w, height=h, point_size=3.5)
+        img_err = _render_with_camera_params(pred_err_pcd, params, width=w, height=h, point_size=3.5, visible=False)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
 
