@@ -6,48 +6,14 @@ import os
 import numpy as np
 import torch
 import open3d as o3d
-from open3d import camera as o3dcamera
-
 from datasets.io import IO
 from PIL import Image, ImageDraw, ImageFont
-import copy
 
 from tools import builder
 from utils.config import cfg_from_yaml_file
 from tools.predictor import AdaPoinTrPredictor
 from extensions.chamfer_dist import ChamferDistanceL1
 from utils.metrics import Metrics
-
-def lookat_extrinsic(eye, center, up):
-    eye = eye.astype(np.float64)
-    center = center.astype(np.float64)
-    up = up.astype(np.float64)
-
-    z = eye - center
-    z /= (np.linalg.norm(z) + 1e-12)
-
-    x = np.cross(up, z)
-    x /= (np.linalg.norm(x) + 1e-12)
-
-    y = np.cross(z, x)
-
-    R = np.vstack([x, y, z]).T
-    t = -R.dot(eye)
-
-    extrinsic = np.eye(4, dtype=np.float64)
-    extrinsic[:3, :3] = R
-    extrinsic[:3, 3] = t
-
-    return extrinsic
-
-def intrinsics_from_fov(width, height, fov_deg):
-    fov_rad = np.deg2rad(fov_deg)
-    fy = 0.5 * height / np.tan(fov_rad / 2.0)
-    fx = fy
-    cx = width / 2.0
-    cy = height / 2.0
-    intr = o3dcamera.PinholeCameraIntrinsic(int(width), int(height), float(fx), float(fy), float(cx), float(cy))
-    return intr
         
 def _norm_from_partial(gt, partial):
     centroid = np.mean(partial, axis=0)
@@ -134,88 +100,54 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
     colors = cmap_func(norm)[:, :3]
     return colors.astype(np.float64), dists
 
-def _render_pcd_with_params(pcd,
-                            center,
-                            eye, 
-                            up,
-                            width=512,
-                            height=512,
-                            fov_deg=60,
-                            point_size=3.5,
-                            visible=False
-                            ):
+def _render_pcd_to_image(pcd,
+                         center,
+                         cam_pos,
+                         cam_up, 
+                         radius, 
+                         distance,
+                         width=512,
+                         height=512,
+                         point_size=3.5,
+                         visible=False
+                         ):
     vis = o3d.visualization.Visualizer()
     vis.create_window(width=width, height=height, visible=visible)
     vis.add_geometry(pcd)
 
     ctr = vis.get_view_control()
+    # ctr.set_lookat(cam_center.tolist())
 
-    param = o3dcamera.PinholeCameraParameters()
-    param.intrinsic = intrinsics_from_fov(width, height, fov_deg)
-    param.extrinsic = lookat_extrinsic(np.asarray(eye), np.asarray(center), np.asarray(up))
+   # front = (cam_center - cam_pos)
+    #front = front / (np.linalg.norm(front) + 1e-12)
 
-    ctr.convert_from_pinhole_camera_parameters(param, allow_arbitrary=True)
+    #ctr.set_front(front.tolist())
+    #ctr.set_up(cam_up.tolist())
+
+    # ctr.set_lookat(center.tolist())
+    # front = (center - cam_pos)
+    # front /= np.linalg.norm(front)
+    # ctr.set_front(front.tolist())
+    # ctr.set_up(cam_up.tolist())
+    
+    zoom = 0.85 * (radius / distance)
+    ctr.set_zoom(float(zoom))
 
     opt = vis.get_render_option()
     opt.background_color = np.asarray([1.0, 1.0, 1.0])
-    opt.point_size = point_size
+    opt.point_size = float(point_size)
 
     vis.update_geometry(pcd)
+
     vis.poll_events()
     vis.update_renderer()
+
     img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
     vis.destroy_window()
 
-    return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
-# def _render_pcd_to_image(pcd,
-#                          center,
-#                          cam_pos,
-#                          cam_up, 
-#                          radius, 
-#                          distance,
-#                          width=512,
-#                          height=512,
-#                          point_size=3.5,
-#                          visible=False
-#                          ):
-#     vis = o3d.visualization.Visualizer()
-#     vis.create_window(width=width, height=height, visible=visible)
-#     vis.add_geometry(pcd)
-
-#     ctr = vis.get_view_control()
-#     #ctr.set_lookat(cam_center.tolist())
-
-#     #front = (cam_center - cam_pos)
-#     #front = front / (np.linalg.norm(front) + 1e-12)
-
-#     #ctr.set_front(front.tolist())
-#     #ctr.set_up(cam_up.tolist())
-
-#     ctr.set_lookat(center.tolist())
-#     front = (center - cam_pos)
-#     front /= np.linalg.norm(front)
-#     ctr.set_front(front.tolist())
-#     ctr.set_up(cam_up.tolist())
-    
-#     zoom = .75 #2.0 * (radius / distance)
-#     ctr.set_zoom(float(zoom))
-
-#     opt = vis.get_render_option()
-#     opt.background_color = np.asarray([1.0, 1.0, 1.0])
-#     opt.point_size = float(point_size)
-
-#     vis.update_geometry(pcd)
-
-#     vis.poll_events()
-#     vis.update_renderer()
-
-#     img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
-#     vis.destroy_window()
-
-#     img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
-
-#     return img8 
+    return img8 
 
 def render_triplet_from_pcds(partial_pcd_path,
                              gt_pcd_path,
@@ -263,45 +195,25 @@ def render_triplet_from_pcds(partial_pcd_path,
         radius = float(np.max(np.linalg.norm(gt_np - center, axis=1)))
         radius = radius if radius > 0 else 1.0
 
-    #cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
+    cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
 
-   # cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    cam_pos = center + cam_offset
+    cam_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
     w, h = panel_size
-
-    def dump_stats(name, p):
-        pts = np.asarray(p.points)
-        print(f"{name} count={len(pts)} min={np.min(pts)} max={np.max(pts)}")
-
-    dump_stats("partial", partial_pcd)
-    dump_stats("gt", gt_pcd)
-    dump_stats("complete", complete_pcd)
-
     bbox = gt_pcd.get_axis_aligned_bounding_box()
     center = bbox.get_center()
     extent = bbox.get_extent()
+    radius = np.linalg.norm(extent) * 0.5
+    distance = 1.1 * radius 
 
-    bbox_margin = 0.05
-    extent = extent * (1.0 + bbox_margin)
-    radius = float(np.linalg.norm(extent) * 0.5)
+    # cam_dir = np.array([1.0, -1.0, 0.6])
+    # cam_dir = center + cam_dir * distance
 
-    eye = center + np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
-    up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    fov_deg = 45.0
-#    # distance = 1.1 * radius 
-#     cam_offset = np.array([1.5 * radius, -1.5 * radius, 0.9 * radius], dtype=np.float64)
-#     cam_pos = center + cam_offset
-#     distance = float(np.linalg.norm(cam_offset))    
-# # cam_dir = np.array([1.0, -1.0, 0.6])
-#     # cam_dir = center + cam_dir * distance
-
-#     cam_up = np.asarray([0.0, 0.0, 1.0])
-    img_partial = _render_pcd_with_params(partial_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
-    img_complete = _render_pcd_with_params(complete_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
-    img_gt = _render_pcd_with_params(gt_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=point_size, visible=False)
-    # img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
-    # img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
-    # img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    cam_up = np.asarray([0.0, 0.0, 1.0])
+    img_partial = _render_pcd_to_image(partial_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    img_gt = _render_pcd_to_image(gt_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
+    img_complete = _render_pcd_to_image(complete_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=point_size)
 
     panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
 
@@ -313,10 +225,10 @@ def render_triplet_from_pcds(partial_pcd_path,
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
-        #img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=3.5)
-        img_err = _render_pcd_with_params(pred_err_pcd, center, eye, up, width=w, height=h, fov_deg=fov_deg, point_size=3.5, visible=False)
+        img_err = _render_pcd_to_image(pred_err_pcd, center, cam_pos, cam_up, radius, distance, width=w, height=h, point_size=3.5)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
+
 
     num_panels = len(panels)
     total_w = w * num_panels
@@ -391,7 +303,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     info = {
         "center": center.tolist(),
         "radius": radius,
-        #"cam_pos": cam_pos.tolist(),
+        "cam_pos": cam_pos.tolist(),
         "panels": len(panels),
         "pred_error": pred_error_stats
     }
