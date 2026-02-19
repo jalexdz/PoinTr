@@ -144,6 +144,7 @@ def _render_pcd_to_image(pcd,
     img8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
     return img8 
+
 def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
                                 fov_deg=60.0,
                                 width=512, height=512,
@@ -164,8 +165,21 @@ def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
     cam_offset = np.array([cam_offset_factor[0] * radius,
                            cam_offset_factor[1] * radius,
                            cam_offset_factor[2] * radius], dtype=np.float64)
-    cam_pos = center + cam_offset
-    cam_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+    
+
+    z = 2*radius
+    xy = np.array([1.0, 0.0], dtype=np.float64) * radius
+    yaw_deg=45.0
+    if abs(yaw_deg) > 1e-6:
+        th = np.deg2rad(yaw_deg)
+        Rz = np.array([[np.cos(th), -np.sin(th)],
+                       [np.sin(th), np.cos(th)]], dtype=np.float64)
+        xy = Rz.dot(xy)
+    
+
+
+    cam_pos = center + np.array([xy[0], xy[1], z], dtype=np.float64) #cam_offset
+    cam_up = np.asarray([0.0, -1.0, 0.0], dtype=np.float64)
 
     # Create a short-lived visualizer with the GT cloud to set a camera
     vis = o3d.visualization.Visualizer()
@@ -182,7 +196,7 @@ def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
     ctr.set_lookat(center.tolist())
     ctr.set_front(front.tolist())
     ctr.set_up(cam_up.tolist())
-
+    print(f"Camera set up to {cam_up.tolist()}")
     # optionally tune zoom a bit; this is still needed to get proper scale
     ctr.set_zoom(0.75)
 
@@ -195,9 +209,11 @@ def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
     fx = fy = 0.5 * width / np.tan(0.5 * fov_rad)
     cx = width * 0.5
     cy = height * 0.5
+   
     intr = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     params.intrinsic = intr
-
+    params.intrinsic.width = int(width)
+    params.intrinsic.height = int(height)
     # clean up
     vis.destroy_window()
 
@@ -209,13 +225,18 @@ def _render_with_camera_params(pcd, params, width=512, height=512, point_size=3.
     Render a single point cloud using the provided PinholeCameraParameters.
     """
     vis = o3d.visualization.Visualizer()
-    vis.create_window(width=width, height=height, visible=visible)
+    win_w = int(getattr(params.intrinsic, "width", 0))
+    win_h = int(getattr(params.intrinsic, "height", 0))
+    vis.create_window(width=win_w, height=win_h, visible=visible)
     vis.add_geometry(pcd)
+
+    print(f"[DEBUG] Render window size = ({win_w} {win_h}), params.intrinsic size = ({params.intrinsic.width} {params.intrinsic.height})")
 
     ctr = vis.get_view_control()
     # apply the previously-captured parameters exactly
     try:
-        ctr.convert_from_pinhole_camera_parameters(params)
+        print("CONVERT...")
+        ctr.convert_from_pinhole_camera_parameters(params, allow_arbitrary=True)
     except Exception:
         # fallback: if convert_from fails for some Open3D installs, try set_lookat/front/up
         cam = params.extrinsic
@@ -325,7 +346,7 @@ def render_triplet_from_pcds(partial_pcd_path,
     # pick a 3/4 top view (positive Z so you see the top)
     cam_offset = np.array([0.8 * radius, -1.0 * radius, 1.6 * radius], dtype=np.float64)
     cam_pos = center + cam_offset
-    cam_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+    cam_up = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
 
     # Debug prints (optional)
     print("CAM anchor center:", center, "radius:", radius)
@@ -397,10 +418,11 @@ def render_triplet_from_pcds(partial_pcd_path,
         img_err = _render_with_camera_params(pred_err_pcd, params, width=w, height=h, point_size=3.5, visible=False)
         panels.append(Image.fromarray(img_err))
         pred_error_stats = {"mean": dists.mean(), "max": float(np.max(dists)), "min": float(np.min(dists))}
-
-
-    num_panels = len(panels)
-    total_w = w * num_panels
+    pad_between = 0
+    grid_w = 2 * w + pad_between
+    grid_h = 2 * h + pad_between
+    #num_panels = len(panels)
+    #total_w = w * num_panels
 
     try: 
         if title_font_path and os.path.exists(title_font_path):
@@ -418,17 +440,22 @@ def render_triplet_from_pcds(partial_pcd_path,
         caption_font = ImageFont.load_default()
 
     padding = 0
-    title_height = int(40)
-    caption_height = int(28)
-    footer_padding = 6
 
-    final_h = title_height + h + caption_height + footer_padding
-    out_image = Image.new("RGB", (total_w, final_h), (255, 255, 255))
+    title_height = int(5)
+    caption_height = int(30)
+    footer_padding = 30
+    final_w = grid_w
+    final_h = title_height + grid_h + caption_height + footer_padding
+    out_image = Image.new("RGB", (final_w, final_h), (255, 255, 255))
     draw = ImageDraw.Draw(out_image)
 
     y_panels = title_height
-    for i, p in enumerate(panels):
-        out_image.paste(p, (i * w, y_panels))
+    #out_image.paste(panels[0], (0, y_panels))
+    #out_image.paste(panels[1], (w, y_panels))
+    #out_image.paste(panels[3], (0, y_panels + h))
+    #out_image.paste(panels[2], (w, y_panels + h))
+   # for i, p in enumerate(panels):
+    #    out_image.paste(p, (i * w, y_panels))
 
     # Title text
     cd_txt = f"CD: {cd:.2f} mm" if cd is not None else "CD: N/A"
@@ -445,24 +472,48 @@ def render_triplet_from_pcds(partial_pcd_path,
         sel_type = "Unknown"
 
     title_txt = f"{asset.capitalize()} {sel_type.capitalize()} ({cd_txt}, {f1_txt})"
+    tmp_img = Image.new("RGB", (10, 10))
+    tmp_draw = ImageDraw.Draw(tmp_img)
+    bbox_title = tmp_draw.textbbox((0, 0), title_txt, font=title_font)
+
+    title_text_h = bbox_title[3] - bbox_title[1]
+    title_pad_top = 4
+    title_pad_bottom =  6
+    title_height = title_text_h + title_pad_top + title_pad_bottom
+    final_h = title_height + grid_h + caption_height + footer_padding
+    out_image = Image.new("RGB", (final_w, final_h), (255, 255, 255))
+    draw = ImageDraw.Draw(out_image)
+
+    y_panels = title_height
+    out_image.paste(panels[0], (0, y_panels))
+    out_image.paste(panels[1], (w, y_panels))
+    out_image.paste(panels[3], (0, y_panels + h))
+    out_image.paste(panels[2], (w, y_panels + h))
     bbox = draw.textbbox((0, 0), title_txt, font=title_font)
     title_w = bbox[2] - bbox[0]
     title_h = bbox[3] - bbox[1]
-    title_x = max(0, (total_w - title_w) // 2)
-    title_y = max(4, (title_height - title_h) // 2)
+    title_x = max(0, (final_w - title_w) // 2)
+    title_y = title_pad_top #max(4, (title_height - title_h) // 2)
     draw.text((title_x, title_y), title_txt, fill=(0, 0, 0), font=title_font)
 
-    caption_labels = ["Part.", "Pred.", "GT"]
+    caption_labels = ["Part.", "Pred."]
     if include_error:
         caption_labels.append(f"Err. (mean={2*pred_error_stats['mean']:.2f} mm, max={2 * pred_error_stats['max']:.2f} mm)")
-
+    caption_labels.append("GT")
+    #cap_y = y_panels + grid_h + (caption_height - 12) // 2
     for i, label in enumerate(caption_labels):
+        row = i // 2
+        col = i % 2
+
+        cell_x = col * (w + pad_between)
+        cell_y_top = y_panels + row * (h + pad_between)
+
         bbox = draw.textbbox((0, 0), label, font=caption_font)
         cap_w = bbox[2] - bbox[0]
         cap_h = bbox[3] - bbox[1]
         
-        cap_x = i * w + (w - cap_w) // 2
-        cap_y = y_panels + h + (caption_height - cap_h) // 2
+        cap_x = cell_x + (w - cap_w) // 2 #i * w + (w - cap_w) // 2
+        cap_y = cell_y_top + h + max(2, (caption_height - cap_h) // 2)
         draw.text((cap_x, cap_y), label, fill=(0, 0, 0), font=caption_font)
 
 
