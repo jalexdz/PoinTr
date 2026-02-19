@@ -85,11 +85,12 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
     if pred_np.size == 0 or gt_np.size == 0:
         return np.zeros((pred_np.shape[0], 3), dtype=np.float32), np.zeros((pred_np.shape[0],), dtype=np.float32)
     
-    gt_tree = o3d.geometry.KDTreeFlann(gt)
+    tree = o3d.geometry.KDTreeFlann(pred) #o3d.geometry.KDTreeFlann(gt)
+
     dists = np.zeros((pred_np.shape[0],), dtype=np.float32)
 
-    for i, p in enumerate(pred_np):
-        _, idx, dist2 = gt_tree.search_knn_vector_3d(p, 1)
+    for i, p in enumerate(gt_np): #enumerate(pred_np):
+        _, idx, dist2 = tree.search_knn_vector_3d(p, 1)
         dists[i] = np.sqrt(dist2[0]) if len(dist2) > 0 else 0.0
 
     if vmax is None:
