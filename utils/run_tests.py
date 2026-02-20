@@ -45,28 +45,10 @@ def per_sample_to_df(per_sample):
 
 def save_boxplot(df, metric, out_path, title, ylabel):
     assert metric in df.columns, f"Invalid metric: {metric}"
+    fig, ax = plt.subplots(figsize=(4.5, 5.5), constrained_layout=True)
+    fig.subplots_adjust(bottom=0.20)
 
     plot_df = df[np.isfinite(df[metric])].copy()
-
-    plt.figure(figsize=(4.5, 5.5))
-    ax = sns.boxplot(
-        data=plot_df,
-        x="asset",
-        y=metric,
-        showfliers=True,
-        whis=1.5
-    )
-
-    ax.set_xlabel('Asset Class')
-    ax.set_ylabel(ylabel)
-    if title is None:
-        title = f'{metric.upper()} distribution across viewpoints (per asset)'
-    ax.set_title(title)
-
-    plt.xticks(rotation=20, ha="right")
-    plt.tight_layout()
-
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.rcParams.update({
         "font.size": 14,
         "axes.labelsize": 12,
@@ -74,7 +56,31 @@ def save_boxplot(df, metric, out_path, title, ylabel):
         "xtick.labelsize": 8,
         "ytick.labelsize": 8,
         "legend.fontsize": 12})
-    plt.savefig(out_path, dpi=600, bbox_inches='tight')
+
+    #plt.figure(figsize=(4.5, 5.5))
+    flierprops = dict(
+        marker='.',
+        markersize=10)
+    sns.boxplot(
+        data=plot_df,
+        x="asset",
+        y=metric,
+        showfliers=True,
+        whis=1.5, ax=ax, flierprops=flierprops
+    )
+
+    ax.set_xlabel('Asset Class', fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+    if title is None:
+        title = f'{metric.upper()} distribution across viewpoints (per asset)'
+    ax.set_title(title, fontsize=14)
+
+    plt.xticks(rotation=20, ha="right")
+    #plt.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    
+    plt.savefig(out_path, dpi=600, bbox_inches=None)
     plt.close()
 
 def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
@@ -87,7 +93,7 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
     
     tree = o3d.geometry.KDTreeFlann(pred) #o3d.geometry.KDTreeFlann(gt)
 
-    dists = np.zeros((pred_np.shape[0],), dtype=np.float32)
+    dists = np.zeros((gt_np.shape[0],), dtype=np.float32)
 
     for i, p in enumerate(gt_np): #enumerate(pred_np):
         _, idx, dist2 = tree.search_knn_vector_3d(p, 1)
@@ -411,9 +417,9 @@ def render_triplet_from_pcds(partial_pcd_path,
     if include_error: 
         err_colors, dists = _compute_error_colormap(complete_pcd, gt_pcd, cmap='viridis', vmax=None)
         
-        complete_pts = np.asarray(complete_pcd.points)
+        #complete_pts = np.asarray(complete_pcd.points)
         pred_err_pcd = o3d.geometry.PointCloud()
-        pred_err_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
+        pred_err_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
         img_err = _render_with_camera_params(pred_err_pcd, params, width=w, height=h, point_size=3.5, visible=False)
         panels.append(Image.fromarray(img_err))
