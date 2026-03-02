@@ -62,7 +62,7 @@ def save_denoising_boxplot(partial_raw_by_asset, completion_raw_by_asset, out_pa
     plot_df = plot_df[np.isfinite(plot_df["Error (mm)"])]
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    sns.boxplot(data=plot_df, x="Asset", y="Error (mm)", hue="source", ax=ax, whis=1.5,
+    sns.boxplot(data=plot_df, x="Asset", y="Error (mm)", hue="Source", ax=ax, whis=1.5, gap=0.3,
                 flierprops=dict(marker='.', markersize=4, alpha=0.5))
 
 
