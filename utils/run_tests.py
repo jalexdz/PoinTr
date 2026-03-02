@@ -538,7 +538,7 @@ def render_triplet_from_pcds(partial_pcd_path,
 
     return out_path, info
 
-def compute_samples(df, 
+def compute_samples(df, ablation,
                     predictor,
                     out_csv="selected_samples.csv",
                     job_out_dir="metrics",
@@ -643,8 +643,8 @@ def compute_samples(df,
             f1 = float(row["f1"])
             view_id = int(row["view_id"])
 
-            partial_pcd_path = os.path.join("data", "NRG", "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd")
-            gt_pcd_path = os.path.join("data", "NRG", "NRG_pc", f"{asset}-{asset}-{view_id}.pcd")
+            partial_pcd_path = os.path.join("data", f"NRG_{ablation}", "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd")
+            gt_pcd_path = os.path.join("data", f"NRG_{ablation}", "NRG_pc", f"{asset}-{asset}-{view_id}.pcd")
 
             out_path = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
             if sel_type=="outlier":
@@ -669,6 +669,7 @@ def main(cfg_path,
          ckpt_path,
          test_txt_path,
          out_path,
+         ablation
          ):
 
     assert os.path.exists(cfg_path), "Config file missing"
@@ -716,8 +717,8 @@ def main(cfg_path,
         # Open partial PCD and run inference
         # file_path: NRG_pc/glovebox-glovebox-215.pcd
         # partial_path: projected_partial_noise/glovebox/glovebox/models/215.pcd
-        file_path = os.path.join("data", "NRG", sample['file_path'])
-        partial_path = os.path.join("data", "NRG", "projected_partial_noise", sample['taxonomy_id'], sample['model_id'], "models", f"{sample['view_id']}.pcd")
+        file_path = os.path.join("data", f"NRG_{ablation}", sample['file_path'])
+        partial_path = os.path.join("data", f"NRG_{ablation}", "projected_partial_noise", sample['taxonomy_id'], sample['model_id'], "models", f"{sample['view_id']}.pcd")
    
         partial = IO.get(partial_path).astype(np.float32)
         gt0 = IO.get(file_path).astype(np.float32)
@@ -751,7 +752,7 @@ def main(cfg_path,
     save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
 
     # get iqs
-    compute_samples(df, predictor,
+    compute_samples(df, ablation, predictor,
                     os.path.join(out_path, "results_by_cd.csv"),
                     os.path.join(out_path, "plots/graphics"),
                     metric_col="cd")
@@ -788,6 +789,11 @@ if __name__ == "__main__":
         type = str, 
         default="./results",
         help = 'Output path')
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default="baseline",
+        help = "Ablation")
     args = parser.parse_args()
 
-    main(cfg_path=args.cfg_path, ckpt_path=args.ckpt_path, test_txt_path=args.test_txt_path, out_path=args.out_path)
+    main(cfg_path=args.cfg_path, ckpt_path=args.ckpt_path, test_txt_path=args.test_txt_path, out_path=args.out_path, ablation=args.ablation)
