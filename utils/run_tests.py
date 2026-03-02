@@ -34,6 +34,12 @@ def per_sample_to_df(per_sample):
                 "cd": float(e["cd"]),
                 "emd": float(e["emd"]),
                 "f1": float(e["f1"]),
+                "partial_to_gt_mean": float(e["partial_to_gt_mean"]),
+                "partial_to_gt_std": float(e["partial_to_gt_std"]),
+                "partial_to_gt_median": float(e["partial_to_gt_median"]),
+                "partial_to_completion_mean": float(e["partial_to_completion_mean"]),
+                "partial_to_completion_std": float(e["partial_to_completion_std"]),
+                "partial_to_completion_median": float(e["partial_to_completion_median"]),
             })
             
     df = pd.DataFrame(rows)
@@ -42,6 +48,31 @@ def per_sample_to_df(per_sample):
                                  ordered=True)
     
     return df
+
+def save_denoising_boxplot(partial_raw_by_asset, completion_raw_by_asset, out_path):
+    records = []
+
+    for asset in sorted(partial_raw_by_asset.keys()):
+        for d in partial_raw_by_asset[asset]:
+            records.append({'Asset': "asset", 'Source': 'Partial', 'Error (mm)': float(d) * 2})
+        for d in completion_raw_by_asset[asset]:
+            records.append({'Asset': "asset", 'Source': 'Completion', 'Error (mm)': float(d) * 2})
+
+    plot_df = pd.DataFrame(records)
+    plot_df = plot_df[np.isfinite(plot_df["Error (mm)"])]
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    sns.boxplot(data=plot_df, x="Asset", y="Error (mm)", hue="source", ax=ax, whis=1.5,
+                flierprops=dict(marker='.', markersize=4, alpha=0.5))
+
+
+    ax.set_xlabel('Asset Class', fontsize=11)
+    ax.set_ylabel('Point-to-GT Distance (mm)', fontsize=11)
+    ax.set_title('Partial vs. Completion Error in Observed Region', fontsize=13)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600)
+    plt.close()
 
 def save_boxplot(df, metric, out_path, title, ylabel):
     assert metric in df.columns, f"Invalid metric: {metric}"
@@ -226,6 +257,7 @@ def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
     # Return anchor info so caller can reuse center/radius if needed
     anchor = {"params": params, "center": center, "radius": radius, "cam_pos": cam_pos, "cam_up": cam_up}
     return anchor
+
 def _render_with_camera_params(pcd, params, width=512, height=512, point_size=3.5, visible=False):
     """
     Render a single point cloud using the provided PinholeCameraParameters.
@@ -632,7 +664,6 @@ def compute_samples(df, ablation,
     picks_df.to_csv(out_csv, index=False)
     print(f"[RESULT] Saved {out_csv}")
 
-
     # Render and save as: asset_grid
     grouped = picks_df.groupby("asset")
     for asset, g in grouped:
@@ -663,6 +694,45 @@ def compute_samples(df, ablation,
                                  panel_size=(512, 512),
                                  point_size=2.0,)
     return picks_df
+
+def compute_denoising_metrics(partial_norm,
+                              complete,
+                              gt_norm
+    ):
+    gt_pcd = o3d.geometry.PointCloud()
+    gt_pcd.points = o3d.utility.Vector3dVector(gt_norm.astype(np.float64))
+    gt_tree = o3d.geometry.KDTreeFlann(gt_pcd)
+
+    complete_pcd = o3d.geometry.PointCloud()
+    complete_pcd.points = o3d.utility.Vector3dVector(complete.astype(np.float64))
+    complete_tree = o3d.geometry.KDTreeFlann(complete_pcd)
+
+    partial_to_gt = []
+    completion_to_gt = []
+
+    for p in partial_norm.astype(np.float64):
+        _, _, dist2_partial_gt = gt_tree.search_knn_vector_3d(p, 1)
+        partial_to_gt.append(np.sqrt(dist2_partial_gt[0]))
+
+        _, idx_complete, _ = complete_tree.search_knn_vector_3d(p, 1)
+        corresponding_complete_pt = np.asarray(complete_pcd.points)[idx_complete[0]]
+
+        _, _, dist2_completion_gt = gt_tree.search_knn_vector_3d(corresponding_complete_pt, 1)
+        completion_to_gt.append(np.sqrt(dist2_completion_gt[0]))
+
+    partial_to_gt = np.asarray(partial_to_gt)
+    completion_to_gt = np.asarray(completion_to_gt)
+
+    return {
+        'partial_to_gt_mean': float(partial_to_gt.mean()),
+        'partial_to_gt_std': float(partial_to_gt.std()),
+        'partial_to_gt_median': float(np.median(partial_to_gt)),
+        'completion_to_gt_mean': float(completion_to_gt.mean()),
+        'completion_to_gt_std': float(completion_to_gt.std()),
+        'completion_to_gt_median': float(np.median(completion_to_gt)),
+        'partial_to_gt_raw': partial_to_gt,
+        'completion_to_gt_raw': completion_to_gt
+    }
 
 
 def main(cfg_path,
@@ -711,6 +781,8 @@ def main(cfg_path,
     print(f"[DATASET] {len(file_list)} samples were loaded")
 
     per_sample = {}
+    partial_raw_by_asset = {}
+    completion_raw_by_asset = {}
 
     for sample in file_list:
         print(f"Processing {sample['file_path']}...")
@@ -729,6 +801,17 @@ def main(cfg_path,
         # Predictor returns points normalized
         complete = predictor.predict(partial_norm)
 
+        denoising = compute_denoising_metrics(partial_norm, complete, gt)
+
+        asset = sample['model_id']
+        if asset not in partial_raw_by_asset.keys():
+            partial_raw_by_asset[asset] = []
+            completion_raw_by_asset[asset] = []
+
+        partial_raw_by_asset[asset].append(denoising['partial_to_gt_raw'])
+        partial_raw_by_asset[asset].append(denoising['completion_to_gt_raw'])
+
+
         # Compute CD and F1 between complete and gt
         _metrics = Metrics.get(torch.from_numpy(complete).float().cuda().unsqueeze(0), torch.from_numpy(gt).float().cuda().unsqueeze(0), require_emd=True)
         
@@ -740,6 +823,12 @@ def main(cfg_path,
              'cd': 2 * _metrics[1],
              'emd': 2 * _metrics[3],
              'f1': _metrics[0],
+             'partial_to_gt_mean': 2*denoising['partial_to_gt_mean'],
+             'partial_to_gt_std': 2*denoising['partial_to_gt_std'],
+             'partial_to_gt_median': 2*denoising['partial_to_gt_median'],
+             'partial_to_completion_median': 2*denoising['partial_to_completion_median'],
+             'partial_to_completion_std': 2*denoising['partial_to_completion_std'],
+             'partial_to_completion_mean': 2*denoising['partial_to_completion_mean'],
              #'metrics': [float(x) for x in _metrics]
          })
         
@@ -751,6 +840,13 @@ def main(cfg_path,
     save_boxplot(df, "emd", os.path.join(out_path, "plots/boxplots/test_emd_boxplot.pdf"), title="Test Set EMD by Asset", ylabel="EMD (mm)")
     save_boxplot(df, "f1", os.path.join(out_path, "plots/boxplots/test_f1_boxplot.pdf"), title="Test Set F1 Score by Asset", ylabel="F1")
 
+
+
+    partial_raw_by_asset = {k: np.concatenate(v) for k, v in partial_raw_by_asset.items()}
+    completion_raw_by_asset = {k: np.concatenate(v) for k, v in completion_raw_by_asset.items()}
+
+    save_denoising_boxplot(partial_raw_by_asset, completion_raw_by_asset, 
+                           os.path.join(out_path, "plots/boxplots/test_denoising_boxplot.pdf"))
     # get iqs
     compute_samples(df, ablation, predictor,
                     os.path.join(out_path, "results_by_cd.csv"),
