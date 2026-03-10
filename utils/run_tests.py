@@ -446,11 +446,11 @@ def compute_samples(df, ablation_name, predictor,
             display_sel = sel_type
 
         partial_pcd_path = os.path.join(
-            "data", f"NRG_{ablation_name}",
+            "data", f"NRG_{''.join(ablation_name.strip().lower().split())}",
             "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd"
         )
         gt_pcd_path = os.path.join(
-            "data", f"NRG_{ablation_name}",
+            "data", f"NRG_{''.join(ablation_name.strip().lower().split())}",
             "NRG_pc", f"{asset}-{asset}-{view_id}.pcd"
         )
         out_graphic = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
@@ -544,8 +544,8 @@ def run_single_ablation(cfg_path, ckpt_path, test_txt_path, ablation_name, out_p
     completion_raw_by_asset = {}
 
     for sample in file_list:
-        file_path    = os.path.join("data", f"NRG_{ablation_name}", sample['file_path'])
-        partial_path = os.path.join("data", f"NRG_{ablation_name}",
+        file_path    = os.path.join("data", f"NRG_{''.join(ablation_name.strip().lower().split())}", sample['file_path'])
+        partial_path = os.path.join("data", f"NRG_{''.join(ablation_name.strip().lower().split())}",
                                     "projected_partial_noise",
                                     sample['taxonomy_id'], sample['model_id'],
                                     "models", f"{sample['view_id']}.pcd")
@@ -592,7 +592,7 @@ def run_single_ablation(cfg_path, ckpt_path, test_txt_path, ablation_name, out_p
     completion_raw_by_asset = {k: np.concatenate(v) for k, v in completion_raw_by_asset.items()}
 
     # ── Per-ablation individual plots ──
-    abl_plot_dir = os.path.join(out_path, "plots", "boxplots", ablation_name)
+    abl_plot_dir = os.path.join(out_path, "plots", "boxplots", ''.join(ablation_name.strip().lower().split()))
     save_single_ablation_boxplot(df, "cd",  os.path.join(abl_plot_dir, "cd.pdf"),
                                   title=f"[{ablation_name}] CD by Asset",  ylabel="CD (mm)")
     save_single_ablation_boxplot(df, "f1",  os.path.join(abl_plot_dir, "f1.pdf"),
@@ -603,11 +603,11 @@ def run_single_ablation(cfg_path, ckpt_path, test_txt_path, ablation_name, out_p
                                    os.path.join(abl_plot_dir, "denoising.pdf"))
 
     # ── Per-ablation graphics (best/median/worst/outliers) ──
-    abl_graphics_dir = os.path.join(out_path, "plots", "graphics", ablation_name)
+    abl_graphics_dir = os.path.join(out_path, "plots", "graphics", ''.join(ablation_name.strip().lower().split()))
     df_no_abl = df.drop(columns=["ablation"])   # compute_samples expects plain df
     compute_samples(
         df_no_abl, ablation_name, predictor,
-        out_csv=os.path.join(out_path, f"results_{ablation_name}_by_cd.csv"),
+        out_csv=os.path.join(out_path, f"results_{''.join(ablation_name.strip().lower().split())}_by_cd.csv"),
         job_out_dir=abl_graphics_dir,
         metric_col="cd",
     )
