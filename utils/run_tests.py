@@ -114,9 +114,9 @@ def save_ablation_boxplot(df, metric, out_path, title, ylabel, ablation_order=No
         ax=ax, flierprops=flierprops,
     )
 
-    n_assets = plot_df['assets'].nunique()
+    n_assets = plot_df['asset'].nunique()
     for i in range(n_assets - 1):
-        ax.axvline(x=i + 0.5, color='lighgrey', linewidth=1, linestyle='--', zorder=0)
+        ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1, linestyle='--', zorder=0)
 
     ax.set_xlabel('Asset Class', fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
@@ -615,6 +615,29 @@ def run_single_ablation(cfg_path, ckpt_path, test_txt_path, ablation_name, out_p
     partial_raw_by_asset    = {k: np.concatenate(v) for k, v in partial_raw_by_asset.items()}
     completion_raw_by_asset = {k: np.concatenate(v) for k, v in completion_raw_by_asset.items()}
 
+    denoising_rows = []
+    for asset in sorted(partial_raw_by_asset.keys()):
+        p = partial_raw_by_asset[asset]
+        c = completion_raw_by_asset[asset]
+        denoising_rows.append({
+        "asset":                      asset,
+        "ablation":                   ablation_name,
+        "partial_to_gt_mean":         float(p.mean()) * 2,
+        "partial_to_gt_std":          float(p.std()) * 2,
+        "partial_to_gt_median":       float(np.median(p)) * 2,
+        "completion_to_gt_mean":      float(c.mean()) * 2,
+        "completion_to_gt_std":       float(c.std()) * 2,
+        "completion_to_gt_median":    float(np.median(c)) * 2,
+    })
+
+    denoising_df = pd.DataFrame(denoising_rows)
+    denoising_csv = os.path.join(
+        out_path,
+        f"denoising_{''.join(ablation_name.strip().lower().split())}.csv" 
+    )
+    denoising_df.to_csv(denoising_csv, index=False)
+    print(f"  Saved {denoising_csv}")
+
     # ── Per-ablation individual plots ──
     abl_plot_dir = os.path.join(out_path, "plots", "boxplots", ''.join(ablation_name.strip().lower().split()))
     save_single_ablation_boxplot(df, "cd",  os.path.join(abl_plot_dir, "cd.pdf"),
@@ -660,6 +683,15 @@ def main(ablation_configs, out_path):
             'partial_raw':     partial_raw,
             'completion_raw':  completion_raw,
         })
+
+    # Combined denoising CSV
+    all_denoising_csvs = [
+        pd.read_csv(os.path.join(out_path, f"denoising_{''.join(a['name'].strip().lower().split())}.csv"))
+        for a in ablation_configs
+    ]  
+    pd.concat(all_denoising_csvs, ignore_index=True).to_csv(
+        os.path.join(out_path, "combined_denoising.csv"), index=False
+    )
 
     # ── Combined dataframe ──
     combined_df = pd.concat(all_dfs, ignore_index=True)
