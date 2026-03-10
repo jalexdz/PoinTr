@@ -99,15 +99,25 @@ def save_ablation_boxplot(df, metric, out_path, title, ylabel, ablation_order=No
     assert metric in df.columns, f"Invalid metric: {metric}"
     plt.rcParams.update(RCPARAMS)
 
+    if ablation_order is None:
+        plot_df['ablation'] = pd.Categorical(
+            plot_df['ablation'], categories=ablation_order, ordered=True
+        )
+
     plot_df = df[np.isfinite(df[metric])].copy()
     fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
     flierprops = dict(marker='.', markersize=6, alpha=0.5)
     sns.boxplot(
         data=plot_df, x="asset", y=metric,
         hue="ablation", hue_order=ablation_order,
-        showfliers=True, whis=1.5, gap=0.1,
+        showfliers=True, whis=1.5, gap=0.15, width=0.7,
         ax=ax, flierprops=flierprops,
     )
+
+    n_assets = plot_df['assets'].nunique()
+    for i in range(n_assets - 1):
+        ax.axvline(x=i + 0.5, color='lighgrey', linewidth=1, linestyle='--', zorder=0)
+
     ax.set_xlabel('Asset Class', fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=14)
@@ -164,15 +174,29 @@ def save_combined_denoising_boxplot(all_denoising, out_path, ablation_order=None
     plot_df = pd.DataFrame(records)
     plot_df = plot_df[np.isfinite(plot_df["Error (mm)"])]
 
+    if ablation_order:
+        plot_df["Ablation"] = pd.Categorical(
+            plot_df["Ablation"], categories=ablation_order, ordered=True
+        )
+    asset_order = sorted(plot_df["Asset"].unique())
+    n_assets = len(asset_order)
+    plot_df["Asset"] = pd.Categorical(
+        plot_df["Asset"], categories=asset_order, ordered=True
+    )
+
     fig, axes = plt.subplots(1, 2, figsize=(16, 5), constrained_layout=True)
     for ax, source in zip(axes, ['Partial', 'Completion']):
         sub = plot_df[plot_df['Source'] == source]
         sns.boxplot(
             data=sub, x="Asset", y="Error (mm)",
             hue="Ablation", hue_order=ablation_order,
-            ax=ax, whis=1.5, gap=0.1,
+            ax=ax, whis=1.5, gap=0.15, width=0.7,
             flierprops=dict(marker='.', markersize=4, alpha=0.5),
         )
+
+        for i in range(n_assets - 1):
+            ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
+
         ax.set_title(f'{source} Point-to-GT Error', fontsize=13)
         ax.set_xlabel('Asset Class', fontsize=11)
         ax.set_ylabel('Error (mm)', fontsize=11)
