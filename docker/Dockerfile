@@ -38,6 +38,13 @@ RUN pip install --no-build-isolation \
 # GPU kNN
 RUN pip install --upgrade https://github.com/unlimblue/KNN_CUDA/releases/download/0.2/KNN_CUDA-0.2-py3-none-any.whl
 
+# Pytorch3D
+RUN FORCE_CUDA=1 pip install --no-cache-dir --no-build-isolation \
+    "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+ 
+#RUN pip install --no-cache-dir pytorch3d \
+#    -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu118_pyt200/download.html
+
 WORKDIR /workspace/extensions/gridding
 RUN python setup.py install
 
@@ -52,6 +59,12 @@ RUN python setup.py install
 
 WORKDIR /workspace/extensions/gridding_loss
 RUN python setup.py install
+
+WORKDIR /workspace/PointSFDA/extensions/expansion_penalty
+RUN python setup.py install
+
+WORKDIR /workspace/PointSFDA/extensions/chamfer_dist
+RUN python setup.py install 
 
 WORKDIR /workspace
 RUN python - <<'PY'

@@ -13,3 +13,8 @@ timm
 tqdm
 transforms3d
 einops
+fvcore
+iopath
+plyfile
+trimesh
+open3d
