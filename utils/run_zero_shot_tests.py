@@ -201,7 +201,7 @@ def render_grid(
         cy = cap_y0 + max(2, (caption_h - ch) // 2)
         draw.text((cx, cy), label, fill=(0, 0, 0), font=reg_font)
 
-    os.makedirs(os.path.dirname(out_path_root), exist_ok=True)
+    os.makedirs(os.path.join(out_path_root, asset), exist_ok=True)
     out_img.save(out_path)
     print(f"  Saved {out_path}")
     return out_path
@@ -212,8 +212,8 @@ def main(ablation_configs: list[dict],
          out_path: str,
          panel_size: int = 512,
          point_size: float = 2.0,
-         txt_path: str = 'data/NRG_real/test.txt',
-         data_dir: str = 'data/NRG_real/projected_partial_noise/',
+         txt_path: str = 'data/NRGReal/test.txt',
+         data_dir: str = 'data/NRGReal/projected_partial_noise/',
          ):
     print("Loading models...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -257,7 +257,7 @@ def main(ablation_configs: list[dict],
 
         try:
             render_grid(
-                partial_pcd_path=os.path.join(data_dir, file['taxonomy_id'], file['model_id'], 'models', f"partial_{file['view_id']}.pcd"),
+                partial_pcd_path=os.path.join(data_dir, file['taxonomy_id'], file['model_id'], 'models', f"{file['view_id']}.pcd"),
                 predictors=predictors,
                 out_path_root=out_path,
                 out_path=out_file,
