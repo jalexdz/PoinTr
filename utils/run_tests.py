@@ -295,7 +295,7 @@ def save_combined_denoising_by_ablation_boxplot(all_denoising, out_path, ablatio
 # Rendering helpers
 # ─────────────────────────────────────────────
 
-def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
+def _compute_error_colormap(pred, gt, cmap='turbo', vmax=None):
     pred_np = np.asarray(pred.points)
     gt_np   = np.asarray(gt.points)
     if pred_np.size == 0 or gt_np.size == 0:
@@ -304,9 +304,10 @@ def _compute_error_colormap(pred, gt, cmap='viridis', vmax=None):
     dists = np.zeros((gt_np.shape[0],), dtype=np.float32)
     for i, p in enumerate(gt_np):
         _, idx, dist2 = tree.search_knn_vector_3d(p, 1)
-        dists[i] = np.sqrt(dist2[0]) if len(dist2) > 0 else 0.0
+        dists[i] = 1000* np.sqrt(dist2[0]) if len(dist2) > 0 else 0.0
     if vmax is None:
-        vmax = max(1e-6, np.percentile(dists, 95))
+        vmax = 100 # mm
+        #vmax = max(1e-6, np.percentile(dists, 95))
     norm   = np.clip(dists / float(vmax), 0.0, 1.0)
     colors = plt.get_cmap(cmap)(norm)[:, :3]
     return colors.astype(np.float64), dists
@@ -394,6 +395,7 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
     complete = predictor.predict(input_norm)
     complete = complete * 2.0 + c
 
+    
     complete_pcd = o3d.geometry.PointCloud()
     complete_pcd.points = o3d.utility.Vector3dVector(complete)
     complete_pcd.colors = o3d.utility.Vector3dVector(
@@ -412,16 +414,32 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
 
     pred_error_stats = None
     if include_error:
-        err_colors, dists = _compute_error_colormap(complete_pcd, gt_pcd, cmap='viridis')
+        pred_pts = np.asarray(complete_pcd.points).copy()
+        gt_pts_err = np.asarray(gt_pcd.points).copy()
+
+        pred_pts -= pred_pts.mean(axis=0)
+        gt_pts_err -= gt_pts_err.mean(axis=0)
+
+        complete_pcd_err = o3d.geometry.PointCloud()
+        complete_pcd_err.points = o3d.utility.Vector3dVector(pred_pts)
+
+        gt_pcd_err = o3d.geometry.PointCloud()
+        gt_pcd_err.points = o3d.utility.Vector3dVector(gt_pts_err)
+
+        err_colors, dists = _compute_error_colormap(complete_pcd_err, gt_pcd_err, cmap='turbo')
+
         pred_err_pcd = o3d.geometry.PointCloud()
         pred_err_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
         pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
+
         img_err = _render_with_camera_params(pred_err_pcd, params, width=w, height=h, point_size=3.5)
         panels.append(Image.fromarray(img_err))
-        pred_error_stats = {"mean": float(dists.mean()),
-                            "max":  float(np.max(dists)),
-                            "min":  float(np.min(dists))}
 
+        pred_error_stats = {
+        "mean": float(dists.mean()),
+        "max":  float(np.max(dists)),
+        "min":  float(np.min(dists)),
+    }
     try:
         title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
         caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
