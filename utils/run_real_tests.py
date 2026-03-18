@@ -417,7 +417,7 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
 
     err_label = (f"Err. (mean={err_mean:.2f} mm, max={err_max:.2f} mm)"
                  if err_mean is not None else "KNN Err.")
-    cap_labels = ["Part.", "Pred.", err_label, "GT"]
+    cap_labels = ["Part.", "Pred.", err_label, "GT + Pred."]
 
     tmp_draw      = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     bbox_title    = tmp_draw.textbbox((0, 0), title_txt, font=title_font)
@@ -744,9 +744,9 @@ def run_zero_shot(ablation_configs: list[dict],
             # Individual 2×2 grid
             abl_tag   = "".join(abl_name.strip().lower().split())
             title_txt = (
-                f"{tid.replace('_',' ').capitalize()}  view {vid}  [{abl_name}]  |  "
-                f"CD {metrics['icp_cd_mm']:.1f}mm  F1 {metrics['icp_f1']:.2f}  "
-                f"fit {metrics['fitness']:.2f}  RMSE {metrics['inlier_rmse_mm']:.2f}mm"
+                f"{abl_name} - {tid.replace('_',' ').capitalize()} {vid} "
+                f"(CD: {metrics['icp_cd_mm']:.2f} mm, F1: {metrics['icp_f1']:.2f}, "
+                f"Fit: {metrics['fitness']:.2f}, RMSE: {metrics['inlier_rmse_mm']:.2f} mm)"
             )
             grid_2x2 = compose_2x2_grid(panels, title_txt,
                                          panel_w=panel_size, panel_h=panel_size,
