@@ -308,6 +308,7 @@ def _knn_error_colormap(pred_pts_raw, gt_pts_raw, cmap="turbo", vmax_mm=100.0):
 # ─────────────────────────────────────────────
 
 def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
+                    icp_transform,
                     cam_params, panel_w, panel_h, point_size):
     """
     Returns four PIL Images matching sim eval colour conventions:
@@ -334,44 +335,46 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
     gt_pcd.colors = o3d.utility.Vector3dVector(
         np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))        # blue
 
-    # ── Bring GT and registered completion into the prediction's coordinate frame ──
-    # complete_pts lives in real-world camera frame (metres, sensor origin).
-    # gt_pts and registered_pts live in GT mesh frame after ICP.
-    # Shift both by (complete_pts.centroid - registered_pts.centroid) so they
-    # align spatially with the prediction and share cam_params orientation.
-    pred_c = complete_pts.mean(axis=0)
-    reg_c  = registered_pts.mean(axis=0)
-    frame_shift = pred_c - reg_c   # vector to bring registered/gt into pred frame
+    # ── Bring GT into the prediction's coordinate frame via ICP transform ────────
+    # icp_transform maps source (completion) → target (GT mesh frame).
+    # Its inverse maps GT mesh frame → completion frame, which is what we want
+    # so all 4 panels share cam_params and show consistent orientation.
+    T_inv = np.linalg.inv(icp_transform)
 
-    gt_in_pred_frame  = gt_pts       + frame_shift
-    reg_in_pred_frame = registered_pts + frame_shift
+    def _apply_transform(pts, T):
+        pts_h = np.hstack([pts, np.ones((pts.shape[0], 1))])   # (N,4)
+        return (T @ pts_h.T).T[:, :3].astype(np.float32)
+
+    gt_in_pred   = _apply_transform(gt_pts,          T_inv)
+    reg_in_pred  = _apply_transform(registered_pts,  T_inv)
 
     # ── KNN error map ──────────────────────────────────────────────────────────
-    # Distances computed centroid-aligned (as before), but rendered at
-    # gt_in_pred_frame positions so cam_params frames them correctly.
+    # Distances centroid-aligned (matching sim eval); rendered at gt_in_pred
+    # positions so cam_params frames them identically to Pred.
     err_colors, err_dists = _knn_error_colormap(complete_pts, gt_pts,
                                                 cmap="turbo", vmax_mm=100.0)
     knn_pcd = o3d.geometry.PointCloud()
-    knn_pcd.points = o3d.utility.Vector3dVector(gt_in_pred_frame.astype(np.float64))
+    knn_pcd.points = o3d.utility.Vector3dVector(gt_in_pred.astype(np.float64))
     knn_pcd.colors = o3d.utility.Vector3dVector(err_colors)
 
-    # ── GT + ICP overlay ───────────────────────────────────────────────────────
-    # GT blue + registered completion green, both shifted into pred frame.
-    n_gt  = gt_in_pred_frame.shape[0]
-    n_reg = reg_in_pred_frame.shape[0]
+    # ── GT + registered overlay in pred frame ─────────────────────────────────
+    n_gt  = gt_in_pred.shape[0]
+    n_reg = reg_in_pred.shape[0]
     overlay_pcd = o3d.geometry.PointCloud()
     overlay_pcd.points = o3d.utility.Vector3dVector(
-        np.concatenate([gt_in_pred_frame, reg_in_pred_frame], axis=0).astype(np.float64))
+        np.concatenate([gt_in_pred, reg_in_pred], axis=0).astype(np.float64))
     overlay_pcd.colors = o3d.utility.Vector3dVector(np.vstack([
         np.tile([0.0, 0.0, 1.0], (n_gt,  1)),   # GT blue
         np.tile([0.0, 1.0, 0.0], (n_reg, 1)),   # registered green
     ]))
 
-    imgs = []
-    for pcd in [part_pcd, pred_pcd, knn_pcd, overlay_pcd]:
-        arr = _render(pcd, cam_params,
-                      width=panel_w, height=panel_h, point_size=point_size)
-        imgs.append(Image.fromarray(arr))
+    # All 4 panels use the same cam_params — consistent orientation throughout.
+    imgs = [
+        Image.fromarray(_render(part_pcd,    cam_params, width=panel_w, height=panel_h, point_size=point_size)),
+        Image.fromarray(_render(pred_pcd,    cam_params, width=panel_w, height=panel_h, point_size=point_size)),
+        Image.fromarray(_render(knn_pcd,     cam_params, width=panel_w, height=panel_h, point_size=point_size)),
+        Image.fromarray(_render(overlay_pcd, cam_params, width=panel_w, height=panel_h, point_size=point_size)),
+    ]
 
     err_mean = float(err_dists.mean())
     err_max  = float(err_dists.max())
@@ -734,6 +737,7 @@ def run_zero_shot(ablation_configs: list[dict],
             panels, err_mean, err_max = _build_4_panels(
                 partial_pts, complete_pts, gt_pts,
                 icp_result["registered_pts"],
+                icp_result["transformation"],
                 cam_params, panel_size, panel_size, point_size,
             )
 
