@@ -349,10 +349,19 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
     reg_in_pred  = _apply_transform(registered_pts,  T_inv)
 
     # ── KNN error map ──────────────────────────────────────────────────────────
-    # Distances centroid-aligned (matching sim eval); rendered at gt_in_pred
-    # positions so cam_params frames them identically to Pred.
-    err_colors, err_dists = _knn_error_colormap(complete_pts, gt_pts,
-                                                cmap="turbo", vmax_mm=100.0)
+    # registered_pts and gt_pts are already aligned after ICP — compute distances
+    # directly between them (no centroid alignment needed). Distances in metres
+    # multiplied by 1000 to get mm. Render at gt_in_pred positions.
+    reg_pcd_err = o3d.geometry.PointCloud()
+    reg_pcd_err.points = o3d.utility.Vector3dVector(registered_pts.astype(np.float64))
+    tree_reg  = o3d.geometry.KDTreeFlann(reg_pcd_err)
+    err_dists = np.zeros(gt_pts.shape[0], dtype=np.float32)
+    for i, p in enumerate(gt_pts.astype(np.float64)):
+        _, _, d2 = tree_reg.search_knn_vector_3d(p, 1)
+        err_dists[i] = 1000.0 * np.sqrt(d2[0]) if len(d2) > 0 else 0.0
+    vmax_mm    = 100.0
+    norm       = np.clip(err_dists / vmax_mm, 0.0, 1.0)
+    err_colors = plt.get_cmap("turbo")(norm)[:, :3].astype(np.float64)
     knn_pcd = o3d.geometry.PointCloud()
     knn_pcd.points = o3d.utility.Vector3dVector(gt_in_pred.astype(np.float64))
     knn_pcd.colors = o3d.utility.Vector3dVector(err_colors)
