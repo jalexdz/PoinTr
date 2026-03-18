@@ -218,7 +218,7 @@ def _render(pcd, params, width=512, height=512, point_size=3.5, visible=False):
     return (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
 
-def _knn_error_colormap(pred_pcd, gt_pcd, cmap="viridis"):
+def _knn_error_colormap(pred_pcd, gt_pcd, cmap="turbo"):
     """GT points coloured by nearest-neighbour distance to predicted cloud."""
     gt_np = np.asarray(gt_pcd.points)
     if np.asarray(pred_pcd.points).size == 0 or gt_np.size == 0:
@@ -250,17 +250,17 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
     part_pcd = o3d.geometry.PointCloud()
     part_pcd.points = o3d.utility.Vector3dVector(partial_pts.astype(np.float64))
     part_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.4, 0.4, 0.4], (partial_pts.shape[0], 1)))
+        np.tile([1.0, 0.0, 0.0], (partial_pts.shape[0], 1)))
 
     pred_pcd = o3d.geometry.PointCloud()
     pred_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
     pred_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 0.8, 0.0], (complete_pts.shape[0], 1)))
+        np.tile([0.0, 1.0, 0.0], (complete_pts.shape[0], 1)))
 
     gt_pcd = o3d.geometry.PointCloud()
     gt_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
     gt_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.6, 0.6, 0.6], (gt_pts.shape[0], 1)))
+        np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))
 
     err_colors, _ = _knn_error_colormap(pred_pcd, gt_pcd)
     knn_pcd = o3d.geometry.PointCloud()
@@ -270,7 +270,7 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
     reg_pcd = o3d.geometry.PointCloud()
     reg_pcd.points = o3d.utility.Vector3dVector(registered_pts.astype(np.float64))
     reg_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 0.8, 0.0], (registered_pts.shape[0], 1)))
+        np.tile([0.0, 1.0, 0.0], (registered_pts.shape[0], 1)))
 
     overlay_pcd = gt_pcd + reg_pcd
 
