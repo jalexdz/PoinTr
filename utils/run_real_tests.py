@@ -101,42 +101,100 @@ def _norm_from_partial(partial: np.ndarray):
 # ICP
 # ─────────────────────────────────────────────
 
+def _fpfh_features(pcd, voxel_size: float):
+    """Compute FPFH features for global registration."""
+    pcd.estimate_normals(
+        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2.0, max_nn=30))
+    return o3d.pipelines.registration.compute_fpfh_feature(
+        pcd,
+        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 5.0, max_nn=100),
+    )
+
+
 def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
-            max_correspondence_dist: float = 0.1,
+            max_correspondence_dist: float = 0.05,
             max_iter: int = 100) -> dict:
     """
-    Point-to-point ICP with centroid pre-alignment.
+    Two-stage registration:
+      1. RANSAC global registration using FPFH features — handles arbitrary
+         rotational offsets between the real-world completion and the mesh GT.
+      2. Point-to-point ICP refinement starting from the RANSAC result.
+
+    Both clouds are normalised to unit scale before registration so the
+    voxel/distance parameters are scale-invariant, then the result is mapped
+    back to the original scale.
 
     Returns:
-        registered_pts  — (N,3) transformed source
-        fitness         — fraction of inlier correspondences [0,1]
-        inlier_rmse_mm  — RMSE of inlier pairs (same units as inputs)
-        transformation  — (4,4) homogeneous transform
+        registered_pts  — (N,3) transformed source (original scale)
+        fitness         — ICP inlier fraction [0,1]
+        inlier_rmse_mm  — ICP inlier RMSE (same units as inputs)
+        transformation  — (4,4) homogeneous transform (original scale)
     """
+    # ── Normalise both clouds to unit bounding-box scale ─────────────────────
+    # This makes voxel sizes and distance thresholds scale-invariant.
+    all_pts  = np.concatenate([source_pts, target_pts], axis=0)
+    extent   = all_pts.max(axis=0) - all_pts.min(axis=0)
+    scale    = float(np.linalg.norm(extent))
+    scale    = scale if scale > 1e-9 else 1.0
+
+    src_norm = source_pts.astype(np.float64) / scale
+    tgt_norm = target_pts.astype(np.float64) / scale
+
     src_pcd = o3d.geometry.PointCloud()
-    src_pcd.points = o3d.utility.Vector3dVector(source_pts.astype(np.float64))
+    src_pcd.points = o3d.utility.Vector3dVector(src_norm)
 
     tgt_pcd = o3d.geometry.PointCloud()
-    tgt_pcd.points = o3d.utility.Vector3dVector(target_pts.astype(np.float64))
+    tgt_pcd.points = o3d.utility.Vector3dVector(tgt_norm)
 
-    # Centroid pre-alignment — critical when real-world and sim frames differ
-    T_init = np.eye(4)
-    T_init[:3, 3] = np.mean(target_pts, axis=0) - np.mean(source_pts, axis=0)
+    # ── Voxel downsample for RANSAC (speed) ───────────────────────────────────
+    voxel = 0.05   # 5% of bounding-box diagonal in normalised space
+    src_down = src_pcd.voxel_down_sample(voxel)
+    tgt_down = tgt_pcd.voxel_down_sample(voxel)
 
+    src_fpfh = _fpfh_features(src_down, voxel)
+    tgt_fpfh = _fpfh_features(tgt_down, voxel)
+
+    # ── RANSAC global registration ─────────────────────────────────────────────
+    ransac = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+        src_down, tgt_down, src_fpfh, tgt_fpfh,
+        mutual_filter=True,
+        max_correspondence_distance=voxel * 1.5,
+        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
+        ransac_n=4,
+        checkers=[
+            o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+            o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(voxel * 1.5),
+        ],
+        criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999),
+    )
+    T_ransac = ransac.transformation  # in normalised space
+
+    # ── ICP refinement from RANSAC result ─────────────────────────────────────
+    icp_dist_norm = max_correspondence_dist / scale   # convert to normalised space
     result = o3d.pipelines.registration.registration_icp(
         src_pcd, tgt_pcd,
-        max_correspondence_distance=max_correspondence_dist,
-        init=T_init,
+        max_correspondence_distance=icp_dist_norm,
+        init=T_ransac,
         estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(),
         criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iter),
     )
 
-    src_pcd.transform(result.transformation)
+    # ── Apply transform and convert back to original scale ────────────────────
+    # The rotation/translation of the normalised transform is the same rotation
+    # in world space; only the translation needs to be rescaled.
+    T_norm = result.transformation.copy()
+    T_world = T_norm.copy()
+    T_world[:3, 3] *= scale   # rescale translation only; rotation is unchanged
+
+    src_world = o3d.geometry.PointCloud()
+    src_world.points = o3d.utility.Vector3dVector(source_pts.astype(np.float64))
+    src_world.transform(T_world)
+
     return {
-        "registered_pts":  np.asarray(src_pcd.points).astype(np.float32),
+        "registered_pts":  np.asarray(src_world.points).astype(np.float32),
         "fitness":         float(result.fitness),
-        "inlier_rmse_mm":  float(result.inlier_rmse),
-        "transformation":  result.transformation,
+        "inlier_rmse_mm":  float(result.inlier_rmse * scale),   # back to original units
+        "transformation":  T_world,
     }
 
 
