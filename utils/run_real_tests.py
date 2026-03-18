@@ -146,28 +146,40 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     tgt_pcd = o3d.geometry.PointCloud()
     tgt_pcd.points = o3d.utility.Vector3dVector(tgt_norm)
 
-    # ── Voxel downsample for RANSAC (speed) ───────────────────────────────────
-    voxel = 0.05   # 5% of bounding-box diagonal in normalised space
+    # ── Voxel downsample for RANSAC ───────────────────────────────────────────
+    # Finer voxel (0.03 vs 0.05) captures more distinctive local geometry,
+    # reducing symmetric ambiguity on objects like tables.
+    voxel = 0.03
     src_down = src_pcd.voxel_down_sample(voxel)
     tgt_down = tgt_pcd.voxel_down_sample(voxel)
 
     src_fpfh = _fpfh_features(src_down, voxel)
     tgt_fpfh = _fpfh_features(tgt_down, voxel)
 
-    # ── RANSAC global registration ─────────────────────────────────────────────
-    ransac = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-        src_down, tgt_down, src_fpfh, tgt_fpfh,
-        mutual_filter=True,
-        max_correspondence_distance=voxel * 1.5,
-        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
-        ransac_n=4,
-        checkers=[
-            o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
-            o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(voxel * 1.5),
-        ],
-        criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999),
-    )
-    T_ransac = ransac.transformation  # in normalised space
+    # ── RANSAC global registration — run 3x, keep best fitness ────────────────
+    # Running multiple times and picking the best result handles symmetric
+    # objects (e.g. tables) where a single run often picks the 180° solution.
+    def _run_ransac():
+        return o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+            src_down, tgt_down, src_fpfh, tgt_fpfh,
+            mutual_filter=True,
+            max_correspondence_distance=voxel * 1.0,   # tighter than before
+            estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
+            ransac_n=4,
+            checkers=[
+                o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+                o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(voxel * 1.0),
+            ],
+            criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(500000, 0.9999),
+        )
+
+    best_ransac = None
+    for _ in range(3):
+        r = _run_ransac()
+        if best_ransac is None or r.fitness > best_ransac.fitness:
+            best_ransac = r
+
+    T_ransac = best_ransac.transformation  # in normalised space
 
     # ── ICP refinement from RANSAC result ─────────────────────────────────────
     icp_dist_norm = max_correspondence_dist / scale   # convert to normalised space
