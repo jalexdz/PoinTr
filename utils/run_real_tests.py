@@ -315,7 +315,9 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
         [1] Pred.      — raw completion (green [0,1,0])
         [2] KNN Err.   — GT coloured by dist to raw completion
                          (turbo, fixed vmax=100mm, centroid-aligned)
-        [3] GT+ICP Ov. — GT (blue [0,0,1]) + registered completion (green [0,1,0])
+        [3] GT        — GT (blue [0,0,1]) + ICP-registered completion (green [0,1,0])
+                         rendered with camera anchored on the overlay bbox so
+                         orientation matches Pred.
     """
     part_pcd = o3d.geometry.PointCloud()
     part_pcd.points = o3d.utility.Vector3dVector(partial_pts.astype(np.float64))
@@ -333,8 +335,8 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
         np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))        # blue
 
     # KNN error: centroid-aligned, mm distances, fixed vmax=100mm, turbo
-    err_colors, _ = _knn_error_colormap(complete_pts, gt_pts,
-                                        cmap="turbo", vmax_mm=100.0)
+    err_colors, err_dists = _knn_error_colormap(complete_pts, gt_pts,
+                                                cmap="turbo", vmax_mm=100.0)
     knn_pcd = o3d.geometry.PointCloud()
     knn_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
     knn_pcd.colors = o3d.utility.Vector3dVector(err_colors)
@@ -347,11 +349,22 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
 
     overlay_pcd = gt_pcd + reg_pcd
 
+    # Anchor overlay camera on the overlay combined cloud so orientation matches Pred.
+    overlay_cam = _make_camera_params(overlay_pcd, fov_deg=60.0,
+                                      width=panel_w, height=panel_h)
+
     imgs = []
-    for pcd in [part_pcd, pred_pcd, knn_pcd, overlay_pcd]:
-        arr = _render(pcd, cam_params,
+    for pcd, params in [(part_pcd,    cam_params),
+                        (pred_pcd,    cam_params),
+                        (knn_pcd,     cam_params),
+                        (overlay_pcd, overlay_cam)]:
+        arr = _render(pcd, params,
                       width=panel_w, height=panel_h, point_size=point_size)
         imgs.append(Image.fromarray(arr))
+
+    # Store error stats so compose_2x2_grid can use them in the caption
+    imgs._err_mean = float(err_dists.mean())
+    imgs._err_max  = float(err_dists.max())
     return imgs
 
 
@@ -374,41 +387,62 @@ def _load_fonts():
 # ─────────────────────────────────────────────
 
 def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
-                     title_pad=44, caption_h=28, footer=10):
-    bold_font, reg_font, _ = _load_fonts()
-    cap_labels = ["Part.", "Pred.", "KNN Err.", "GT+ICP Ov."]
+                     caption_height=30, footer_padding=30):
+    """
+    Identical layout to render_triplet_from_pcds.
+    Fonts: title=20pt bold, captions=15pt. Title height dynamic.
+    Grid = 2w x 2h, no inter-panel padding.
+      top-left: Part. | top-right: Pred.
+      bot-left: Err.  | bot-right: GT
+    """
+    try:
+        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
+    except Exception:
+        title_font = caption_font = ImageFont.load_default()
 
-    total_w = 2 * panel_w
-    total_h = title_pad + 2 * panel_h + caption_h + footer
+    err_mean  = getattr(panels, "_err_mean", None)
+    err_max   = getattr(panels, "_err_max",  None)
+    err_label = (f"Err. (mean={err_mean:.2f} mm, max={err_max:.2f} mm)"
+                 if err_mean is not None else "KNN Err.")
+    cap_labels = ["Part.", "Pred.", err_label, "GT"]
 
-    img  = Image.new("RGB", (total_w, total_h), (255, 255, 255))
-    draw = ImageDraw.Draw(img)
+    tmp_draw      = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    bbox_title    = tmp_draw.textbbox((0, 0), title_txt, font=title_font)
+    title_text_h  = bbox_title[3] - bbox_title[1]
+    title_pad_top = 4
+    title_height  = title_text_h + title_pad_top + 6
 
-    bb = draw.textbbox((0, 0), title_txt, font=bold_font)
-    tx = max(0, (total_w - (bb[2] - bb[0])) // 2)
-    draw.text((tx, 5), title_txt, fill=(0, 0, 0), font=bold_font)
+    pad_between = 0
+    w, h    = panel_w, panel_h
+    final_w = 2 * w + pad_between
+    final_h = title_height + 2 * h + pad_between + caption_height + footer_padding
 
-    y0        = title_pad
-    positions = [(0, y0), (panel_w, y0), (0, y0 + panel_h), (panel_w, y0 + panel_h)]
-    for panel, (px, py) in zip(panels, positions):
-        img.paste(panel, (px, py))
+    out_image = Image.new("RGB", (final_w, final_h), (255, 255, 255))
+    draw      = ImageDraw.Draw(out_image)
+    y_panels  = title_height
 
-    cap_y_rows = [y0 + panel_h, y0 + 2 * panel_h]
+    out_image.paste(panels[0], (0, y_panels))
+    out_image.paste(panels[1], (w, y_panels))
+    out_image.paste(panels[2], (0, y_panels + h))
+    out_image.paste(panels[3], (w, y_panels + h))
+
+    bbox    = draw.textbbox((0, 0), title_txt, font=title_font)
+    title_x = max(0, (final_w - (bbox[2] - bbox[0])) // 2)
+    draw.text((title_x, title_pad_top), title_txt, fill=(0, 0, 0), font=title_font)
+
     for i, label in enumerate(cap_labels):
-        col = i % 2
-        row = i // 2
-        bb  = draw.textbbox((0, 0), label, font=reg_font)
-        cw, ch = bb[2] - bb[0], bb[3] - bb[1]
-        cx = col * panel_w + (panel_w - cw) // 2
-        cy = cap_y_rows[row] + max(2, (caption_h - ch) // 2)
-        draw.text((cx, cy), label, fill=(0, 0, 0), font=reg_font)
+        row_i, col_i = i // 2, i % 2
+        cell_x       = col_i * (w + pad_between)
+        cell_y_top   = y_panels + row_i * (h + pad_between)
+        bbox_c       = draw.textbbox((0, 0), label, font=caption_font)
+        cap_w        = bbox_c[2] - bbox_c[0]
+        cap_h        = bbox_c[3] - bbox_c[1]
+        cap_x        = cell_x + (w - cap_w) // 2
+        cap_y        = cell_y_top + h + max(2, (caption_height - cap_h) // 2)
+        draw.text((cap_x, cap_y), label, fill=(0, 0, 0), font=caption_font)
 
-    return img
-
-
-# ─────────────────────────────────────────────
-# Combined N-ablation-row grid
-# ─────────────────────────────────────────────
+    return out_image
 
 def compose_ablation_row_grid(rows_data, asset, view_id,
                                panel_w=384, panel_h=384,
