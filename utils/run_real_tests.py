@@ -349,16 +349,26 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
 
     overlay_pcd = gt_pcd + reg_pcd
 
-    # Anchor overlay camera on the overlay combined cloud so orientation matches Pred.
-    overlay_cam = _make_camera_params(overlay_pcd, fov_deg=60.0,
-                                      width=panel_w, height=panel_h)
+    # Translate the overlay to match the partial/pred coordinate frame so the
+    # same camera shows everything right-side up and in-frame.
+    # Strategy: shift overlay centroid to match the completion centroid.
+    overlay_pts = np.concatenate([gt_pts, registered_pts], axis=0)
+    overlay_shift = complete_pts.mean(axis=0) - overlay_pts.mean(axis=0)
+    shifted_overlay = o3d.geometry.PointCloud()
+    shifted_overlay.points = o3d.utility.Vector3dVector(
+        (overlay_pts + overlay_shift).astype(np.float64))
+    # Split colours: first gt_pts.shape[0] are GT (blue), rest are reg (green)
+    n_gt  = gt_pts.shape[0]
+    n_reg = registered_pts.shape[0]
+    overlay_colors = np.vstack([
+        np.tile([0.0, 0.0, 1.0], (n_gt,  1)),
+        np.tile([0.0, 1.0, 0.0], (n_reg, 1)),
+    ])
+    shifted_overlay.colors = o3d.utility.Vector3dVector(overlay_colors)
 
     imgs = []
-    for pcd, params in [(part_pcd,    cam_params),
-                        (pred_pcd,    cam_params),
-                        (knn_pcd,     cam_params),
-                        (overlay_pcd, overlay_cam)]:
-        arr = _render(pcd, params,
+    for pcd in [part_pcd, pred_pcd, knn_pcd, shifted_overlay]:
+        arr = _render(pcd, cam_params,
                       width=panel_w, height=panel_h, point_size=point_size)
         imgs.append(Image.fromarray(arr))
 
@@ -695,17 +705,18 @@ def run_zero_shot(ablation_configs: list[dict],
         partial_pts = IO.get(partial_path).astype(np.float32)
         gt_pts      = gt_dict[tid]   # same cloud reused for all views of this asset
 
-        # Camera anchored on partial cloud, shared across all ablation rows for this view
-        anchor_pcd = o3d.geometry.PointCloud()
-        anchor_pcd.points = o3d.utility.Vector3dVector(partial_pts.astype(np.float64))
-        cam_params = _make_camera_params(anchor_pcd, fov_deg=60.0,
-                                          width=panel_size, height=panel_size)
-
         for abl_name, predictor in predictors:
             print(f"  {tid}  view {vid}  [{abl_name}]")
 
             partial_norm, centroid = _norm_from_partial(partial_pts)
             complete_pts           = predictor.predict(partial_norm) * 2.0 + centroid
+
+            # Camera anchored on combined partial+completion bbox so Pred. never clips
+            anchor_pcd = o3d.geometry.PointCloud()
+            anchor_pcd.points = o3d.utility.Vector3dVector(
+                np.concatenate([partial_pts, complete_pts], axis=0).astype(np.float64))
+            cam_params = _make_camera_params(anchor_pcd, fov_deg=60.0,
+                                              width=panel_size, height=panel_size)
 
             icp_result  = run_icp(complete_pts, gt_pts,
                                    max_correspondence_dist=icp_max_dist,
