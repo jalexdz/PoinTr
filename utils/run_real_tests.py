@@ -212,12 +212,22 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
 
 def compute_icp_metrics(registered_pts: np.ndarray,
                          gt_pts: np.ndarray) -> dict:
-    """CD and F1 between ICP-registered completion and GT (same call as sim eval)."""
-    reg_t = torch.from_numpy(registered_pts).float().cuda().unsqueeze(0)
-    gt_t  = torch.from_numpy(gt_pts).float().cuda().unsqueeze(0)
+    """
+    CD and F1 between ICP-registered completion and GT.
+    Normalizes both clouds the same way as the sim eval pipeline before
+    calling Metrics.get — centroid on gt, scale /2 — so τ=0.01 is meaningful.
+    CD is then multiplied by 2 and rescaled back to mm.
+    """
+    # Normalize: centroid from gt, same /2 scale as _norm_from_partial
+    centroid = np.mean(gt_pts, axis=0)
+    reg_norm = (registered_pts - centroid) / 2.0
+    gt_norm  = (gt_pts         - centroid) / 2.0
+
+    reg_t = torch.from_numpy(reg_norm).float().cuda().unsqueeze(0)
+    gt_t  = torch.from_numpy(gt_norm).float().cuda().unsqueeze(0)
     m     = Metrics.get(reg_t, gt_t, require_emd=False)
     return {
-        "icp_cd_mm": float(2 * m[1]),
+        "icp_cd_mm": float(2 * m[1]),   # ×2 converts normalized CD → mm
         "icp_f1":    float(m[0]),
     }
 
@@ -663,7 +673,8 @@ def run_zero_shot(ablation_configs: list[dict],
                   grid_panel_size: int = 384,
                   point_size: float    = 2.0,
                   icp_max_dist: float  = 0.1,
-                  icp_max_iter: int    = 100):
+                  icp_max_iter: int    = 100,
+                  exclude_assets: list = None):
     """
     Args:
         mesh_specs   : [(taxonomy_id, mesh_path), ...]  one per asset.
@@ -814,7 +825,15 @@ def run_zero_shot(ablation_configs: list[dict],
     df.to_csv(csv_path, index=False)
     print(f"\n  Saved {csv_path}")
 
-    # ── Strip plots ───────────────────────────────────────────────────────────
+    # ── Strip plots + LaTeX table (exclude_assets filtered) ─────────────────
+    plot_df = df[~df["asset"].isin(exclude_assets or [])].copy()
+    if not plot_df.empty:
+        plot_df["asset"] = pd.Categorical(
+            plot_df["asset"],
+            categories=[a for a in df["asset"].cat.categories
+                        if a not in (exclude_assets or [])],
+            ordered=True,
+        )
     strip_dir = os.path.join(out_path, "plots", "strips")
     for col, ylabel, title in [
         ("icp_cd_mm",      "ICP CD (mm)",         "Chamfer Distance after ICP"),
@@ -822,12 +841,12 @@ def run_zero_shot(ablation_configs: list[dict],
         ("fitness",        "ICP Fitness",          "ICP Registration Fitness"),
         ("inlier_rmse_mm", "ICP Inlier RMSE (mm)", "ICP Inlier RMSE"),
     ]:
-        save_strip_plot(df, col, ylabel, title,
+        save_strip_plot(plot_df, col, ylabel, title,
                         os.path.join(strip_dir, f"{col}.pdf"),
                         ablation_order=ablation_order)
 
     # ── LaTeX table ───────────────────────────────────────────────────────────
-    save_latex_table(df, os.path.join(out_path, "latex_table.tex"))
+    save_latex_table(plot_df, os.path.join(out_path, "latex_table.tex"))
 
     print(f"\nAll done. Results in {out_path}")
 
@@ -872,6 +891,9 @@ if __name__ == "__main__":
     parser.add_argument("--icp_max_dist",   type=float, default=0.1,
                         help="ICP max correspondence distance (same units as point clouds)")
     parser.add_argument("--icp_max_iter",   type=int,   default=100)
+    parser.add_argument("--exclude_assets", nargs="*",  default=[],
+                        help="Asset taxonomy IDs to exclude from plots and LaTeX table "
+                             "(grids are unaffected). E.g. --exclude_assets officechair")
     args = parser.parse_args()
 
     if not args.ablation:
@@ -898,4 +920,5 @@ if __name__ == "__main__":
         point_size       = args.point_size,
         icp_max_dist     = args.icp_max_dist,
         icp_max_iter     = args.icp_max_iter,
+        exclude_assets   = args.exclude_assets,
     )
