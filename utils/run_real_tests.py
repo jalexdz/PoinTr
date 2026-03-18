@@ -218,18 +218,29 @@ def _render(pcd, params, width=512, height=512, point_size=3.5, visible=False):
     return (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
 
-def _knn_error_colormap(pred_pcd, gt_pcd, cmap="turbo"):
-    """GT points coloured by nearest-neighbour distance to predicted cloud."""
-    gt_np = np.asarray(gt_pcd.points)
-    if np.asarray(pred_pcd.points).size == 0 or gt_np.size == 0:
-        return np.zeros((gt_np.shape[0], 3)), np.zeros(gt_np.shape[0])
-    tree  = o3d.geometry.KDTreeFlann(pred_pcd)
-    dists = np.zeros(gt_np.shape[0], dtype=np.float32)
-    for i, p in enumerate(gt_np):
+def _knn_error_colormap(pred_pts_raw, gt_pts_raw, cmap="turbo", vmax_mm=100.0):
+    """
+    GT points coloured by nearest-neighbour distance to predicted cloud.
+    Distances in mm (x1000 from metre-scale inputs).
+    Clouds are centroid-aligned before distance computation, matching sim eval.
+    vmax_mm=100 is fixed so colours are comparable across views and ablations.
+    """
+    pred_pts = pred_pts_raw.copy().astype(np.float64)
+    gt_pts   = gt_pts_raw.copy().astype(np.float64)
+    pred_pts -= pred_pts.mean(axis=0)
+    gt_pts   -= gt_pts.mean(axis=0)
+
+    if pred_pts.size == 0 or gt_pts.size == 0:
+        return np.zeros((gt_pts_raw.shape[0], 3)), np.zeros(gt_pts_raw.shape[0])
+
+    pred_pcd_err = o3d.geometry.PointCloud()
+    pred_pcd_err.points = o3d.utility.Vector3dVector(pred_pts)
+    tree  = o3d.geometry.KDTreeFlann(pred_pcd_err)
+    dists = np.zeros(gt_pts.shape[0], dtype=np.float32)
+    for i, p in enumerate(gt_pts):
         _, _, d2 = tree.search_knn_vector_3d(p, 1)
-        dists[i] = np.sqrt(d2[0]) if len(d2) > 0 else 0.0
-    vmax   = max(1e-6, float(np.percentile(dists, 95)))
-    norm   = np.clip(dists / vmax, 0.0, 1.0)
+        dists[i] = 1000.0 * np.sqrt(d2[0]) if len(d2) > 0 else 0.0  # metres -> mm
+    norm   = np.clip(dists / float(vmax_mm), 0.0, 1.0)
     colors = plt.get_cmap(cmap)(norm)[:, :3]
     return colors.astype(np.float64), dists
 
@@ -241,36 +252,40 @@ def _knn_error_colormap(pred_pcd, gt_pcd, cmap="turbo"):
 def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
                     cam_params, panel_w, panel_h, point_size):
     """
-    Returns four PIL Images:
-        [0] Part.        — partial cloud (grey)
-        [1] Pred.        — raw completion (green)
-        [2] KNN Err.     — GT coloured by dist to raw completion (viridis)
-        [3] GT+ICP Ov.   — GT (grey) + ICP-registered completion (green)
+    Returns four PIL Images matching sim eval colour conventions:
+        [0] Part.      — partial cloud  (red   [1,0,0])
+        [1] Pred.      — raw completion (green [0,1,0])
+        [2] KNN Err.   — GT coloured by dist to raw completion
+                         (turbo, fixed vmax=100mm, centroid-aligned)
+        [3] GT+ICP Ov. — GT (blue [0,0,1]) + registered completion (green [0,1,0])
     """
     part_pcd = o3d.geometry.PointCloud()
     part_pcd.points = o3d.utility.Vector3dVector(partial_pts.astype(np.float64))
     part_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([1.0, 0.0, 0.0], (partial_pts.shape[0], 1)))
+        np.tile([1.0, 0.0, 0.0], (partial_pts.shape[0], 1)))   # red
 
     pred_pcd = o3d.geometry.PointCloud()
     pred_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
     pred_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 1.0, 0.0], (complete_pts.shape[0], 1)))
+        np.tile([0.0, 1.0, 0.0], (complete_pts.shape[0], 1)))  # green
 
     gt_pcd = o3d.geometry.PointCloud()
     gt_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
     gt_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))
+        np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))        # blue
 
-    err_colors, _ = _knn_error_colormap(pred_pcd, gt_pcd)
+    # KNN error: centroid-aligned, mm distances, fixed vmax=100mm, turbo
+    err_colors, _ = _knn_error_colormap(complete_pts, gt_pts,
+                                        cmap="turbo", vmax_mm=100.0)
     knn_pcd = o3d.geometry.PointCloud()
     knn_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
     knn_pcd.colors = o3d.utility.Vector3dVector(err_colors)
 
+    # ICP overlay: GT blue + registered completion green
     reg_pcd = o3d.geometry.PointCloud()
     reg_pcd.points = o3d.utility.Vector3dVector(registered_pts.astype(np.float64))
     reg_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 1.0, 0.0], (registered_pts.shape[0], 1)))
+        np.tile([0.0, 1.0, 0.0], (registered_pts.shape[0], 1)))  # green
 
     overlay_pcd = gt_pcd + reg_pcd
 
@@ -330,10 +345,6 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
         cy = cap_y_rows[row] + max(2, (caption_h - ch) // 2)
         draw.text((cx, cy), label, fill=(0, 0, 0), font=reg_font)
 
-    draw.line([(panel_w, y0), (panel_w, y0 + 2 * panel_h)],
-              fill=(200, 200, 200), width=1)
-    draw.line([(0, y0 + panel_h), (total_w, y0 + panel_h)],
-              fill=(200, 200, 200), width=1)
     return img
 
 
@@ -401,10 +412,7 @@ def compose_ablation_row_grid(rows_data, asset, view_id,
             lx  = max(2, (row_label_w - lw) // 2)
             draw.text((lx, ly_start + li * line_h), line, fill=(0, 0, 0), font=small_font)
 
-        if row_i < n_rows - 1:
-            sep_y = y_top + panel_h + row_gap // 2
-            draw.line([(row_label_w, sep_y), (total_w, sep_y)],
-                      fill=(200, 200, 200), width=1)
+        # no separator lines — matches sim eval style (panel boundaries only)
 
     # Column captions
     cap_y0     = title_pad + n_rows * panel_h + (n_rows - 1) * row_gap
@@ -416,9 +424,7 @@ def compose_ablation_row_grid(rows_data, asset, view_id,
         cy  = cap_y0 + max(2, (caption_h - ch) // 2)
         draw.text((cx, cy), label, fill=(0, 0, 0), font=reg_font)
 
-    for col_i in range(1, n_cols):
-        vx = row_label_w + col_i * panel_w
-        draw.line([(vx, title_pad), (vx, cap_y0)], fill=(200, 200, 200), width=1)
+    # no divider lines — matches sim eval style (panel boundaries only)
 
     return out_img
 
