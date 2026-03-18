@@ -334,40 +334,41 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
     gt_pcd.colors = o3d.utility.Vector3dVector(
         np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))        # blue
 
-    # KNN error: centroid-aligned, mm distances, fixed vmax=100mm, turbo
+    # ── Bring GT and registered completion into the prediction's coordinate frame ──
+    # complete_pts lives in real-world camera frame (metres, sensor origin).
+    # gt_pts and registered_pts live in GT mesh frame after ICP.
+    # Shift both by (complete_pts.centroid - registered_pts.centroid) so they
+    # align spatially with the prediction and share cam_params orientation.
+    pred_c = complete_pts.mean(axis=0)
+    reg_c  = registered_pts.mean(axis=0)
+    frame_shift = pred_c - reg_c   # vector to bring registered/gt into pred frame
+
+    gt_in_pred_frame  = gt_pts       + frame_shift
+    reg_in_pred_frame = registered_pts + frame_shift
+
+    # ── KNN error map ──────────────────────────────────────────────────────────
+    # Distances computed centroid-aligned (as before), but rendered at
+    # gt_in_pred_frame positions so cam_params frames them correctly.
     err_colors, err_dists = _knn_error_colormap(complete_pts, gt_pts,
                                                 cmap="turbo", vmax_mm=100.0)
     knn_pcd = o3d.geometry.PointCloud()
-    knn_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
+    knn_pcd.points = o3d.utility.Vector3dVector(gt_in_pred_frame.astype(np.float64))
     knn_pcd.colors = o3d.utility.Vector3dVector(err_colors)
 
-    # ICP overlay: GT blue + registered completion green
-    reg_pcd = o3d.geometry.PointCloud()
-    reg_pcd.points = o3d.utility.Vector3dVector(registered_pts.astype(np.float64))
-    reg_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 1.0, 0.0], (registered_pts.shape[0], 1)))  # green
-
-    overlay_pcd = gt_pcd + reg_pcd
-
-    # Translate the overlay to match the partial/pred coordinate frame so the
-    # same camera shows everything right-side up and in-frame.
-    # Strategy: shift overlay centroid to match the completion centroid.
-    overlay_pts = np.concatenate([gt_pts, registered_pts], axis=0)
-    overlay_shift = complete_pts.mean(axis=0) - overlay_pts.mean(axis=0)
-    shifted_overlay = o3d.geometry.PointCloud()
-    shifted_overlay.points = o3d.utility.Vector3dVector(
-        (overlay_pts + overlay_shift).astype(np.float64))
-    # Split colours: first gt_pts.shape[0] are GT (blue), rest are reg (green)
-    n_gt  = gt_pts.shape[0]
-    n_reg = registered_pts.shape[0]
-    overlay_colors = np.vstack([
-        np.tile([0.0, 0.0, 1.0], (n_gt,  1)),
-        np.tile([0.0, 1.0, 0.0], (n_reg, 1)),
-    ])
-    shifted_overlay.colors = o3d.utility.Vector3dVector(overlay_colors)
+    # ── GT + ICP overlay ───────────────────────────────────────────────────────
+    # GT blue + registered completion green, both shifted into pred frame.
+    n_gt  = gt_in_pred_frame.shape[0]
+    n_reg = reg_in_pred_frame.shape[0]
+    overlay_pcd = o3d.geometry.PointCloud()
+    overlay_pcd.points = o3d.utility.Vector3dVector(
+        np.concatenate([gt_in_pred_frame, reg_in_pred_frame], axis=0).astype(np.float64))
+    overlay_pcd.colors = o3d.utility.Vector3dVector(np.vstack([
+        np.tile([0.0, 0.0, 1.0], (n_gt,  1)),   # GT blue
+        np.tile([0.0, 1.0, 0.0], (n_reg, 1)),   # registered green
+    ]))
 
     imgs = []
-    for pcd in [part_pcd, pred_pcd, knn_pcd, shifted_overlay]:
+    for pcd in [part_pcd, pred_pcd, knn_pcd, overlay_pcd]:
         arr = _render(pcd, cam_params,
                       width=panel_w, height=panel_h, point_size=point_size)
         imgs.append(Image.fromarray(arr))
