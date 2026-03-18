@@ -362,10 +362,9 @@ def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
                       width=panel_w, height=panel_h, point_size=point_size)
         imgs.append(Image.fromarray(arr))
 
-    # Store error stats so compose_2x2_grid can use them in the caption
-    imgs._err_mean = float(err_dists.mean())
-    imgs._err_max  = float(err_dists.max())
-    return imgs
+    err_mean = float(err_dists.mean())
+    err_max  = float(err_dists.max())
+    return imgs, err_mean, err_max
 
 
 # ─────────────────────────────────────────────
@@ -387,7 +386,8 @@ def _load_fonts():
 # ─────────────────────────────────────────────
 
 def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
-                     caption_height=30, footer_padding=30):
+                     caption_height=30, footer_padding=30,
+                     err_mean=None, err_max=None):
     """
     Identical layout to render_triplet_from_pcds.
     Fonts: title=20pt bold, captions=15pt. Title height dynamic.
@@ -401,8 +401,6 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
     except Exception:
         title_font = caption_font = ImageFont.load_default()
 
-    err_mean  = getattr(panels, "_err_mean", None)
-    err_max   = getattr(panels, "_err_max",  None)
     err_label = (f"Err. (mean={err_mean:.2f} mm, max={err_max:.2f} mm)"
                  if err_mean is not None else "KNN Err.")
     cap_labels = ["Part.", "Pred.", err_label, "GT"]
@@ -721,7 +719,7 @@ def run_zero_shot(ablation_configs: list[dict],
                 "icp_f1":         icp_metrics["icp_f1"],
             }
 
-            panels = _build_4_panels(
+            panels, err_mean, err_max = _build_4_panels(
                 partial_pts, complete_pts, gt_pts,
                 icp_result["registered_pts"],
                 cam_params, panel_size, panel_size, point_size,
@@ -735,7 +733,8 @@ def run_zero_shot(ablation_configs: list[dict],
                 f"fit {metrics['fitness']:.2f}  RMSE {metrics['inlier_rmse_mm']:.2f}mm"
             )
             grid_2x2 = compose_2x2_grid(panels, title_txt,
-                                         panel_w=panel_size, panel_h=panel_size)
+                                         panel_w=panel_size, panel_h=panel_size,
+                                         err_mean=err_mean, err_max=err_max)
             ind_path = os.path.join(out_path, "grids", "individual",
                                     abl_tag, tid, f"view_{vid:04d}.pdf")
             os.makedirs(os.path.dirname(ind_path), exist_ok=True)
