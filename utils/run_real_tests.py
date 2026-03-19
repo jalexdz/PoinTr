@@ -118,7 +118,7 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     Two-stage registration:
       1. RANSAC global registration using FPFH features — handles arbitrary
          rotational offsets between the real-world completion and the mesh GT.
-      2. Point-to-point ICP refinement starting from the RANSAC result.
+      2. Point-to-plane ICP refinement (two passes: tight + loose fallback).
 
     Both clouds are normalised to unit scale before registration so the
     voxel/distance parameters are scale-invariant, then the result is mapped
@@ -181,22 +181,35 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
 
     T_ransac = best_ransac.transformation  # in normalised space
 
-    # ── ICP refinement from RANSAC result ─────────────────────────────────────
-    icp_dist_norm = max_correspondence_dist / scale   # convert to normalised space
-    result = o3d.pipelines.registration.registration_icp(
-        src_pcd, tgt_pcd,
-        max_correspondence_distance=icp_dist_norm,
-        init=T_ransac,
-        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-        criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iter),
-    )
+    # ── ICP refinement — point-to-plane, two passes ──────────────────────────
+    # Point-to-plane converges better when one cloud is denser/cleaner than the
+    # other (GT mesh sample vs fuzzy real-world completion).
+    # Two passes: tight first, then a looser fallback if fitness is poor.
+    tgt_pcd.estimate_normals(
+        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 2.0, max_nn=30))
+
+    def _icp(init_T, dist):
+        return o3d.pipelines.registration.registration_icp(
+            src_pcd, tgt_pcd,
+            max_correspondence_distance=dist,
+            init=init_T,
+            estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+            criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iter),
+        )
+
+    icp_dist_norm = max_correspondence_dist / scale
+    result = _icp(T_ransac, icp_dist_norm)
+
+    # Fallback: if fitness is poor, retry with 3x looser threshold from same init
+    if result.fitness < 0.3:
+        result_loose = _icp(T_ransac, icp_dist_norm * 3.0)
+        if result_loose.fitness > result.fitness:
+            result = result_loose
 
     # ── Apply transform and convert back to original scale ────────────────────
-    # The rotation/translation of the normalised transform is the same rotation
-    # in world space; only the translation needs to be rescaled.
-    T_norm = result.transformation.copy()
+    T_norm  = result.transformation.copy()
     T_world = T_norm.copy()
-    T_world[:3, 3] *= scale   # rescale translation only; rotation is unchanged
+    T_world[:3, 3] *= scale   # rescale translation; rotation unchanged
 
     src_world = o3d.geometry.PointCloud()
     src_world.points = o3d.utility.Vector3dVector(source_pts.astype(np.float64))
@@ -205,7 +218,7 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     return {
         "registered_pts":  np.asarray(src_world.points).astype(np.float32),
         "fitness":         float(result.fitness),
-        "inlier_rmse_mm":  float(result.inlier_rmse * scale),   # back to original units
+        "inlier_rmse_mm":  float(result.inlier_rmse * scale),
         "transformation":  T_world,
     }
 
