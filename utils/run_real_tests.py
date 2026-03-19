@@ -199,12 +199,31 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
             criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=30),
         )
 
+    # Build a 180° rotation around the object's vertical axis (Z in normalised
+    # space) so we can explicitly test the symmetric alternative for each
+    # RANSAC candidate — this is the main failure mode for symmetric objects
+    # like tables where the support beam is the only disambiguating feature.
+    def _rot180_about_z_at_centroid(T, centroid):
+        """Return T composed with a 180° Z-rotation about the target centroid."""
+        cx, cy, cz = centroid
+        # translate to origin, rotate, translate back
+        R180 = np.array([[-1., 0., 0., 2*cx],
+                         [ 0.,-1., 0., 2*cy],
+                         [ 0., 0., 1., 0.  ],
+                         [ 0., 0., 0., 1.  ]], dtype=np.float64)
+        return R180 @ T
+
+    tgt_centroid = np.mean(tgt_norm, axis=0)
+
     best_result = None
     for _ in range(5):
         r_ransac = _run_ransac()
-        r_icp    = _quick_icp(r_ransac.transformation)
-        if best_result is None or r_icp.fitness > best_result.fitness:
-            best_result = r_icp
+        T0 = r_ransac.transformation
+        # Test original orientation and 180° flipped — pick best ICP fitness
+        for T_cand in [T0, _rot180_about_z_at_centroid(T0, tgt_centroid)]:
+            r_icp = _quick_icp(T_cand)
+            if best_result is None or r_icp.fitness > best_result.fitness:
+                best_result = r_icp
 
     T_ransac = best_result.transformation  # best RANSAC→ICP candidate
 
