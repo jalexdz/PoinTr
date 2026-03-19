@@ -228,9 +228,6 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     T_ransac = best_result.transformation  # best RANSAC→ICP candidate
 
     # ── ICP refinement — point-to-plane, two passes ──────────────────────────
-    # Point-to-plane converges better when one cloud is denser/cleaner than the
-    # other (GT mesh sample vs fuzzy real-world completion).
-    # Two passes: tight first, then a looser fallback if fitness is poor.
     # (normals already estimated on tgt_pcd above)
 
     def _icp(init_T, dist):
@@ -242,10 +239,40 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
             criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iter),
         )
 
+    def _apply_T(pts, T):
+        pts_h = np.hstack([pts, np.ones((len(pts), 1))])
+        return (T @ pts_h.T).T[:, :3]
+
+    def _mean_nn_dist(T):
+        """
+        Mean nearest-neighbour distance from transformed source to target.
+        More sensitive than ICP fitness to small-feature misalignment because
+        it averages over ALL source points rather than counting inliers.
+        Operates in normalised space.
+        """
+        src_np = _apply_T(np.asarray(src_pcd.points), T)
+        tgt_np = np.asarray(tgt_pcd.points)
+        tgt_tmp = o3d.geometry.PointCloud()
+        tgt_tmp.points = o3d.utility.Vector3dVector(tgt_np)
+        tree_tmp = o3d.geometry.KDTreeFlann(tgt_tmp)
+        dists = []
+        for p in src_np:
+            _, _, d2 = tree_tmp.search_knn_vector_3d(p, 1)
+            dists.append(np.sqrt(d2[0]))
+        return float(np.mean(dists))
+
     icp_dist_norm = max_correspondence_dist / scale
     result = _icp(T_ransac, icp_dist_norm)
 
-    # Fallback: if fitness is poor, retry with 3x looser threshold from same init
+    # Always test the 180° flip of the final ICP result and prefer it if the
+    # full-cloud mean NN distance is lower — more sensitive to small asymmetric
+    # features than fitness, and fully generic (no asset-specific logic).
+    T_flip      = _rot180_about_z_at_centroid(result.transformation, tgt_centroid)
+    result_flip = _icp(T_flip, icp_dist_norm)
+    if _mean_nn_dist(result_flip.transformation) < _mean_nn_dist(result.transformation):
+        result = result_flip
+
+    # Fallback: if fitness is still poor, retry with 3x looser threshold
     if result.fitness < 0.3:
         result_loose = _icp(T_ransac, icp_dist_norm * 3.0)
         if result_loose.fitness > result.fitness:
