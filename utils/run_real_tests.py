@@ -163,6 +163,11 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     src_fpfh = _fpfh_features(src_down, voxel, feat_radius_factor=3.0)
     tgt_fpfh = _fpfh_features(tgt_down, voxel, feat_radius_factor=3.0)
 
+    # Estimate normals on full-res target now so point-to-plane ICP works
+    # in both _quick_icp and the final refinement pass below.
+    tgt_pcd.estimate_normals(
+        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 2.0, max_nn=30))
+
     # ── RANSAC global registration — run 5x, refine each, pick best ICP ──────
     # 5 runs (up from 3) + ICP refinement per candidate, then pick the best
     # ICP fitness. This handles 180° symmetry and sparse-beam cases better than
@@ -207,8 +212,7 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     # Point-to-plane converges better when one cloud is denser/cleaner than the
     # other (GT mesh sample vs fuzzy real-world completion).
     # Two passes: tight first, then a looser fallback if fitness is poor.
-    tgt_pcd.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 2.0, max_nn=30))
+    # (normals already estimated on tgt_pcd above)
 
     def _icp(init_T, dist):
         return o3d.pipelines.registration.registration_icp(
