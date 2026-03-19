@@ -101,13 +101,20 @@ def _norm_from_partial(partial: np.ndarray):
 # ICP
 # ─────────────────────────────────────────────
 
-def _fpfh_features(pcd, voxel_size: float):
-    """Compute FPFH features for global registration."""
+def _fpfh_features(pcd, voxel_size: float, feat_radius_factor: float = 3.0):
+    """
+    Compute FPFH features for global registration.
+    feat_radius_factor controls the FPFH search radius relative to voxel_size.
+    Smaller = finer features (better for objects with small distinctive geometry
+    like holes or thin beams); larger = coarser but more robust to noise.
+    Default 3.0 is tighter than the previous 5.0.
+    """
     pcd.estimate_normals(
         o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2.0, max_nn=30))
     return o3d.pipelines.registration.compute_fpfh_feature(
         pcd,
-        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 5.0, max_nn=100),
+        o3d.geometry.KDTreeSearchParamHybrid(
+            radius=voxel_size * feat_radius_factor, max_nn=100),
     )
 
 
@@ -147,25 +154,29 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     tgt_pcd.points = o3d.utility.Vector3dVector(tgt_norm)
 
     # ── Voxel downsample for RANSAC ───────────────────────────────────────────
-    # Finer voxel (0.03 vs 0.05) captures more distinctive local geometry,
-    # reducing symmetric ambiguity on objects like tables.
+    # Downsample at 0.03 for speed; compute FPFH at a tighter radius (3x vs 5x)
+    # to resolve finer geometry like holes and thin beams.
     voxel = 0.03
     src_down = src_pcd.voxel_down_sample(voxel)
     tgt_down = tgt_pcd.voxel_down_sample(voxel)
 
-    src_fpfh = _fpfh_features(src_down, voxel)
-    tgt_fpfh = _fpfh_features(tgt_down, voxel)
+    src_fpfh = _fpfh_features(src_down, voxel, feat_radius_factor=3.0)
+    tgt_fpfh = _fpfh_features(tgt_down, voxel, feat_radius_factor=3.0)
 
-    # ── RANSAC global registration — run 3x, keep best fitness ────────────────
-    # Running multiple times and picking the best result handles symmetric
-    # objects (e.g. tables) where a single run often picks the 180° solution.
+    # ── RANSAC global registration — run 5x, refine each, pick best ICP ──────
+    # 5 runs (up from 3) + ICP refinement per candidate, then pick the best
+    # ICP fitness. This handles 180° symmetry and sparse-beam cases better than
+    # picking by RANSAC fitness alone (RANSAC fitness doesn't account for the
+    # full cloud, ICP fitness does).
+    icp_dist_norm = max_correspondence_dist / scale
+
     def _run_ransac():
         return o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
             src_down, tgt_down, src_fpfh, tgt_fpfh,
             mutual_filter=True,
-            max_correspondence_distance=voxel * 1.0,   # tighter than before
+            max_correspondence_distance=voxel * 1.0,
             estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
-            ransac_n=4,
+            ransac_n=3,   # 3 (down from 4) → more diverse hypothesis sampling
             checkers=[
                 o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
                 o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(voxel * 1.0),
@@ -173,13 +184,24 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
             criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(500000, 0.9999),
         )
 
-    best_ransac = None
-    for _ in range(3):
-        r = _run_ransac()
-        if best_ransac is None or r.fitness > best_ransac.fitness:
-            best_ransac = r
+    def _quick_icp(T_init):
+        """Fast ICP to evaluate a RANSAC candidate."""
+        return o3d.pipelines.registration.registration_icp(
+            src_pcd, tgt_pcd,
+            max_correspondence_distance=icp_dist_norm,
+            init=T_init,
+            estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+            criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=30),
+        )
 
-    T_ransac = best_ransac.transformation  # in normalised space
+    best_result = None
+    for _ in range(5):
+        r_ransac = _run_ransac()
+        r_icp    = _quick_icp(r_ransac.transformation)
+        if best_result is None or r_icp.fitness > best_result.fitness:
+            best_result = r_icp
+
+    T_ransac = best_result.transformation  # best RANSAC→ICP candidate
 
     # ── ICP refinement — point-to-plane, two passes ──────────────────────────
     # Point-to-plane converges better when one cloud is denser/cleaner than the
