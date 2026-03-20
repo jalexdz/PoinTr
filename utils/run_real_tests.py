@@ -203,15 +203,17 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     # space) so we can explicitly test the symmetric alternative for each
     # RANSAC candidate — this is the main failure mode for symmetric objects
     # like tables where the support beam is the only disambiguating feature.
-    def _rot180_about_z_at_centroid(T, centroid):
-        """Return T composed with a 180° Z-rotation about the target centroid."""
+    def _rotn_about_z_at_centroid(T, centroid, deg):
+        """Return T composed with a rotation of `deg` degrees about Z through centroid."""
         cx, cy, cz = centroid
-        # translate to origin, rotate, translate back
-        R180 = np.array([[-1., 0., 0., 2*cx],
-                         [ 0.,-1., 0., 2*cy],
-                         [ 0., 0., 1., 0.  ],
-                         [ 0., 0., 0., 1.  ]], dtype=np.float64)
-        return R180 @ T
+        th  = np.deg2rad(deg)
+        c, s = np.cos(th), np.sin(th)
+        # Translate to origin, rotate, translate back
+        Rn = np.array([[ c, -s, 0., cx*(1-c) + cy*s],
+                       [ s,  c, 0., cy*(1-c) - cx*s],
+                       [ 0., 0., 1., 0.             ],
+                       [ 0., 0., 0., 1.             ]], dtype=np.float64)
+        return Rn @ T
 
     tgt_centroid = np.mean(tgt_norm, axis=0)
 
@@ -220,7 +222,8 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
         r_ransac = _run_ransac()
         T0 = r_ransac.transformation
         # Test original orientation and 180° flipped — pick best ICP fitness
-        for T_cand in [T0, _rot180_about_z_at_centroid(T0, tgt_centroid)]:
+        for deg in [0, 90, 180, 270]:
+            T_cand = _rotn_about_z_at_centroid(T0, tgt_centroid, deg) if deg > 0 else T0
             r_icp = _quick_icp(T_cand)
             if best_result is None or r_icp.fitness > best_result.fitness:
                 best_result = r_icp
@@ -264,13 +267,17 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     icp_dist_norm = max_correspondence_dist / scale
     result = _icp(T_ransac, icp_dist_norm)
 
-    # Always test the 180° flip of the final ICP result and prefer it if the
-    # full-cloud mean NN distance is lower — more sensitive to small asymmetric
-    # features than fitness, and fully generic (no asset-specific logic).
-    T_flip      = _rot180_about_z_at_centroid(result.transformation, tgt_centroid)
-    result_flip = _icp(T_flip, icp_dist_norm)
-    if _mean_nn_dist(result_flip.transformation) < _mean_nn_dist(result.transformation):
-        result = result_flip
+    # Test all 4 cardinal rotations of the final ICP result and pick the one
+    # with lowest mean NN distance — catches 90°/180°/270° symmetric failures
+    # generically without any asset-specific logic.
+    best_nn = _mean_nn_dist(result.transformation)
+    for deg in [90, 180, 270]:
+        T_rot      = _rotn_about_z_at_centroid(result.transformation, tgt_centroid, deg)
+        result_rot = _icp(T_rot, icp_dist_norm)
+        nn         = _mean_nn_dist(result_rot.transformation)
+        if nn < best_nn:
+            best_nn = nn
+            result  = result_rot
 
     # Fallback: if fitness is still poor, retry with 3x looser threshold
     if result.fitness < 0.3:
