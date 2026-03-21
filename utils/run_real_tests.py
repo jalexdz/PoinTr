@@ -852,9 +852,19 @@ def run_zero_shot(ablation_configs: list[dict],
             cam_params = _make_camera_params(anchor_pcd, fov_deg=60.0,
                                               width=panel_size, height=panel_size)
 
-            icp_result  = run_icp(complete_pts, gt_pts,
-                                   max_correspondence_dist=icp_max_dist,
-                                   max_iter=icp_max_iter)
+            # Retry up to 5 times if fitness is poor — RANSAC is stochastic
+            # and occasionally picks a bad initialisation on sparse inputs.
+            icp_result = run_icp(complete_pts, gt_pts,
+                                  max_correspondence_dist=icp_max_dist,
+                                  max_iter=icp_max_iter)
+            for _retry in range(4):
+                if icp_result["fitness"] >= 0.5:
+                    break
+                candidate = run_icp(complete_pts, gt_pts,
+                                     max_correspondence_dist=icp_max_dist,
+                                     max_iter=icp_max_iter)
+                if candidate["fitness"] > icp_result["fitness"]:
+                    icp_result = candidate
             icp_metrics = compute_icp_metrics(icp_result["registered_pts"], gt_pts)
 
             metrics = {
