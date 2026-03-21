@@ -778,6 +778,12 @@ def run_zero_shot(ablation_configs: list[dict],
                        point clouds.  If clouds are in metres start around 0.05;
                        if in mm start around 50.
     """
+    # ── Seed all RNGs for reproducibility ────────────────────────────────────
+    import random as _random
+    _random.seed(gt_seed)
+    np.random.seed(gt_seed)
+    o3d.utility.random.seed(gt_seed)
+
     # ── GT ────────────────────────────────────────────────────────────────────
     print("Sampling GT from meshes...")
     gt_dict = build_gt_dict(mesh_specs, n_points=gt_n_points, seed=gt_seed)
