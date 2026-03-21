@@ -904,13 +904,14 @@ def run_zero_shot(ablation_configs: list[dict],
             })
 
             all_records.append({
-                "asset":          tid,
-                "ablation":       abl_name,
-                "view_id":        vid,
-                "fitness":        metrics["fitness"],
-                "inlier_rmse_mm": metrics["inlier_rmse_mm"],
-                "icp_cd_mm":      metrics["icp_cd_mm"],
-                "icp_f1":         metrics["icp_f1"],
+                "asset":            tid,
+                "ablation":         abl_name,
+                "view_id":          vid,
+                "fitness":          metrics["fitness"],
+                "inlier_rmse_mm":   metrics["inlier_rmse_mm"],
+                "icp_cd_mm":        metrics["icp_cd_mm"],
+                "icp_f1":           metrics["icp_f1"],
+                "registration_ok":  metrics["fitness"] >= 0.4,
             })
 
     # ── Combined ablation-row grids ───────────────────────────────────────────
@@ -933,8 +934,8 @@ def run_zero_shot(ablation_configs: list[dict],
     df.to_csv(csv_path, index=False)
     print(f"\n  Saved {csv_path}")
 
-    # ── Strip plots + LaTeX table (exclude_assets filtered) ─────────────────
-    plot_df = df[~df["asset"].isin(exclude_assets or [])].copy()
+    # ── Strip plots + LaTeX table (exclude_assets filtered + failed registrations) ──
+    plot_df = df[(df["registration_ok"]) & (~df["asset"].isin(exclude_assets or []))].copy()
     if not plot_df.empty:
         plot_df["asset"] = pd.Categorical(
             plot_df["asset"],
