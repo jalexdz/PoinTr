@@ -218,7 +218,7 @@ def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
     tgt_centroid = np.mean(tgt_norm, axis=0)
 
     best_result = None
-    for _ in range(5):
+    for _ in range(10):
         r_ransac = _run_ransac()
         T0 = r_ransac.transformation
         # Test original orientation and 180° flipped — pick best ICP fitness
