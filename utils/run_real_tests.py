@@ -911,7 +911,7 @@ def run_zero_shot(ablation_configs: list[dict],
                 "inlier_rmse_mm":   metrics["inlier_rmse_mm"],
                 "icp_cd_mm":        metrics["icp_cd_mm"],
                 "icp_f1":           metrics["icp_f1"],
-                "registration_ok":  metrics["fitness"] >= 0.4,
+                "registration_ok":  metrics["fitness"] >= 0.5,
             })
 
     # ── Combined ablation-row grids ───────────────────────────────────────────
