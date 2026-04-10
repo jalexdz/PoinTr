@@ -531,6 +531,102 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
     print(f"  Render saved {out_path}")
     return out_path
 
+def compute_outlier_summary(df, metric="cd"):
+    """
+    Compute per-asset outlier counts and percentages using the same 1.5*IQR rule
+    already used in compute_samples().
+    """
+    assert metric in df.columns, f"Invalid metric: {metric}"
+
+    rows = []
+    for (ablation, asset), g in df.groupby(["ablation", "asset"]):
+        vals = g[metric].dropna().values
+        if len(vals) == 0:
+            continue
+
+        q1, q3 = np.percentile(vals, [25, 75])
+        iqr = q3 - q1
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+
+        is_outlier = (g[metric] < lower) | (g[metric] > upper)
+        n_total = int(len(g))
+        n_outliers = int(is_outlier.sum())
+        pct_outliers = 100.0 * n_outliers / max(n_total, 1)
+
+        rows.append({
+            "ablation": ablation,
+            "asset": asset,
+            "metric": metric,
+            "n_total": n_total,
+            "n_outliers": n_outliers,
+            "pct_outliers": pct_outliers,
+        })
+
+    out_df = pd.DataFrame(rows)
+    if not out_df.empty:
+        out_df["asset"] = pd.Categorical(
+            out_df["asset"],
+            categories=sorted(out_df["asset"].unique()),
+            ordered=True,
+        )
+    return out_df
+
+
+def save_outlier_percentage_barplot(outlier_df, out_path, metric="cd", ablation_order=None):
+    """
+    Grouped bar chart: x=asset, y=% outliers, hue=ablation.
+    """
+    if outlier_df.empty:
+        print("[WARN] No outlier data to plot.")
+        return
+
+    plot_df = outlier_df.copy()
+
+    if ablation_order is not None:
+        plot_df["ablation"] = pd.Categorical(
+            plot_df["ablation"], categories=ablation_order, ordered=True
+        )
+
+    plt.rcParams.update(RCPARAMS)
+    fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
+
+    sns.barplot(
+        data=plot_df,
+        x="asset",
+        y="pct_outliers",
+        hue="ablation",
+        hue_order=ablation_order,
+        ax=ax,
+        errorbar=None,
+    )
+
+    ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
+    ax.set_axisbelow(True)
+
+    n_assets = plot_df["asset"].nunique()
+    for i in range(n_assets - 1):
+        ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
+
+    ax.set_xlabel("Asset Class", fontsize=14)
+    ax.set_ylabel("Outliers (%)", fontsize=14)
+    ax.set_title(f"Outlier Percentage by Asset and Ablation ({metric.upper()})", fontsize=16)
+    ax.set_ylim(0, max(5, plot_df["pct_outliers"].max() * 1.15))
+    ax.legend(title="Ablation", bbox_to_anchor=(1.01, 1), loc="upper left")
+    plt.xticks(rotation=20, ha="right")
+
+    # optional value labels
+    for container in ax.containers:
+        labels = []
+        for bar in container:
+            h = bar.get_height()
+            labels.append(f"{h:.1f}" if np.isfinite(h) else "")
+        ax.bar_label(container, labels=labels, padding=2, fontsize=10)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved {out_path}")
 
 # ─────────────────────────────────────────────
 # Sample selection + graphic export
@@ -828,6 +924,11 @@ def main(ablation_configs, out_path):
     combined_df = pd.concat(all_dfs, ignore_index=True)
     combined_df.to_csv(os.path.join(out_path, "combined_results.csv"), index=False)
 
+    # ── Combined outlier summary + plot ───────────────────────────────────────
+    outlier_df = compute_outlier_summary(combined_df, metric="cd")
+    outlier_df.to_csv(os.path.join(out_path, "combined_outlier_summary_cd.csv"), index=False)
+    print("  Saved combined_outlier_summary_cd.csv")
+
     combined_plot_dir = os.path.join(out_path, "plots", "boxplots", "combined")
 
     save_ablation_boxplot(combined_df, "cd",
@@ -851,6 +952,13 @@ def main(ablation_configs, out_path):
     save_combined_denoising_by_ablation_boxplot(
         all_denoising,
         os.path.join(combined_plot_dir, "denoising_by_ablation.pdf"),
+        ablation_order=ablation_order,
+    )
+
+    save_outlier_percentage_barplot(
+        outlier_df,
+        os.path.join(combined_plot_dir, "outlier_percentage_cd.pdf"),
+        metric="cd",
         ablation_order=ablation_order,
     )
 
