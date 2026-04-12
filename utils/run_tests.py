@@ -63,21 +63,21 @@ def per_sample_to_df(per_sample, ablation_name):
 # ─────────────────────────────────────────────
 
 RCPARAMS = {
-    "font.size":        16,
-    "axes.labelsize":   14,
-    "axes.titlesize":   18,
-    "xtick.labelsize":  12,
-    "ytick.labelsize":  12,
-    "legend.fontsize":  13,
-    "axes.ymargin":     0.04,   # tight top/bottom padding (default ~0.10)
+    "font.size":        25,
+    "axes.labelsize":   22,
+    "axes.titlesize":   25,
+    "xtick.labelsize":  20,
+    "ytick.labelsize":  20,
+    "legend.fontsize":  20,
+    "axes.ymargin":     0.08,   # tight top/bottom padding (default ~0.10)
 }
 
 # Shared kwargs for all sns.boxplot calls — thicker lines, visible at 600 dpi
 _BOX_PROPS = dict(
-    boxprops=dict(linewidth=1.8),
-    whiskerprops=dict(linewidth=1.8),
-    capprops=dict(linewidth=2.0),
-    medianprops=dict(linewidth=2.4, color="black"),
+    boxprops=dict(linewidth=1.25),
+    whiskerprops=dict(linewidth=1.25),
+    capprops=dict(linewidth=1.25),
+    medianprops=dict(linewidth=1.25, color="black"),
 )
 
 
@@ -92,7 +92,7 @@ def save_single_ablation_boxplot(df, metric, out_path, title, ylabel):
     sns.boxplot(
         data=plot_df, x="asset", y=metric,
         showfliers=True, whis=1.5, ax=ax,
-        flierprops=dict(marker='.', markersize=6, alpha=0.6),
+        flierprops=dict(marker='d', markerfacecolor='black', markersize=3),
         **_BOX_PROPS,
     )
 
@@ -133,7 +133,7 @@ def save_ablation_boxplot(df, metric, out_path, title, ylabel, ablation_order=No
         hue="ablation", hue_order=ablation_order,
         showfliers=True, whis=1.5, gap=0.15, width=0.7,
         ax=ax,
-        flierprops=dict(marker='.', markersize=5, alpha=0.5),
+        flierprops=dict(marker='d', markerfacecolor='black', markersize=3),
         **_BOX_PROPS,
     )
 
@@ -146,9 +146,9 @@ def save_ablation_boxplot(df, metric, out_path, title, ylabel, ablation_order=No
     for i in range(n_assets - 1):
         ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
 
-    ax.set_xlabel('Asset Class', fontsize=14)
-    ax.set_ylabel(ylabel, fontsize=14)
-    ax.set_title(title, fontsize=16)
+    ax.set_xlabel('Asset Class', fontsize=18)
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.set_title(title, fontsize=20)
     ax.legend(title='Ablation', bbox_to_anchor=(1.01, 1), loc='upper left')
     plt.xticks(rotation=20, ha="right")
 
@@ -182,7 +182,7 @@ def save_single_denoising_boxplot(partial_mean_by_asset, completion_mean_by_asse
     sns.boxplot(
         data=plot_df, x="Asset", y="Mean Error (mm)", hue="Source",
         ax=ax, whis=1.5, gap=0.3,
-        flierprops=dict(marker='.', markersize=5, alpha=0.5),
+        flierprops=dict(marker='d', markerfacecolor='black', markersize=3),
         **_BOX_PROPS,
     )
 
@@ -193,9 +193,9 @@ def save_single_denoising_boxplot(partial_mean_by_asset, completion_mean_by_asse
     for i in range(n_assets - 1):
         ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
 
-    ax.set_xlabel('Asset Class', fontsize=14)
-    ax.set_ylabel('Mean Point-to-GT Distance (mm)', fontsize=14)
-    ax.set_title('Partial vs. Completion Denoising Error (per-viewpoint mean)', fontsize=15)
+    ax.set_xlabel('Asset Class', fontsize=18)
+    ax.set_ylabel('Mean Point-to-GT Distance (mm)', fontsize=18)
+    ax.set_title('Partial vs. Completion Denoising Error (per-viewpoint mean)', fontsize=18)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path, dpi=600, bbox_inches='tight')
@@ -244,16 +244,16 @@ def save_combined_denoising_boxplot(all_denoising, out_path, ablation_order=None
             data=sub, x="Asset", y="Mean Error (mm)",
             hue="Ablation", hue_order=ablation_order,
             ax=ax, whis=1.5, gap=0.15, width=0.7,
-            flierprops=dict(marker='.', markersize=5, alpha=0.5),
+            flierprops=dict(marker='d', markerfacecolor='black', markersize=3),
             **_BOX_PROPS,
         )
         ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
         ax.set_axisbelow(True)
         for i in range(n_assets - 1):
             ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
-        ax.set_title(f'{source} Point-to-GT Error', fontsize=15)
-        ax.set_xlabel('Asset Class', fontsize=14)
-        ax.set_ylabel('Mean Error (mm)', fontsize=14)
+        ax.set_title(f'{source} Point-to-GT Error', fontsize=20)
+        ax.set_xlabel('Asset Class', fontsize=18)
+        ax.set_ylabel('Mean Error (mm)', fontsize=18)
         ax.legend(title='Ablation', bbox_to_anchor=(1.01, 1), loc='upper left')
         ax.tick_params(axis='x', rotation=20)
 
@@ -297,7 +297,7 @@ def save_combined_denoising_by_ablation_boxplot(all_denoising, out_path, ablatio
             data=sub, x="Asset", y="Mean Error (mm)",
             hue="Source", hue_order=source_order,
             ax=ax, whis=1.5, gap=0.2, width=0.65,
-            flierprops=dict(marker='.', markersize=5, alpha=0.5),
+            flierprops=dict(marker='d', markerfacecolor='black', markersize=3),
             **_BOX_PROPS,
         )
         ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
@@ -305,14 +305,14 @@ def save_combined_denoising_by_ablation_boxplot(all_denoising, out_path, ablatio
         for i in range(n_assets - 1):
             ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
 
-        ax.set_title(abl, fontsize=15, fontweight='bold')
-        ax.set_xlabel('Asset Class', fontsize=14)
-        ax.set_ylabel('Mean Point-to-GT Error (mm)' if ax == axes[0] else '', fontsize=14)
+        ax.set_title(abl, fontsize=20, fontweight='bold')
+        ax.set_xlabel('Asset Class', fontsize=18)
+        ax.set_ylabel('Mean Point-to-GT Error (mm)' if ax == axes[0] else '', fontsize=18)
         ax.set_ylim(ymin, ymax)
         ax.legend(title='Source', bbox_to_anchor=(1.01, 1), loc='upper left')
         ax.tick_params(axis='x', rotation=20)
 
-    fig.suptitle('Partial vs. Completion Point-to-GT Error by Ablation', fontsize=16)
+    fig.suptitle('Partial vs. Completion Point-to-GT Error by Ablation', fontsize=18)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path, dpi=600, bbox_inches='tight')
     plt.close()
@@ -468,8 +468,8 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
         }
 
     try:
-        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 25)
-        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
+        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 25)
     except Exception:
         title_font = caption_font = ImageFont.load_default()
 
@@ -511,7 +511,7 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
     caption_labels = ["Part.", "Pred."]
     if include_error:
         caption_labels.append(
-            f"Err. (mean={2*pred_error_stats['mean']:.2f} mm, max={2*pred_error_stats['max']:.2f} mm)"
+            f"Mean Err.:{2*pred_error_stats['mean']:.2f} mm\nMax Err.:{2*pred_error_stats['max']:.2f} mm"
         )
     caption_labels.append("GT")
 
@@ -608,9 +608,9 @@ def save_outlier_percentage_barplot(outlier_df, out_path, metric="cd", ablation_
     for i in range(n_assets - 1):
         ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
 
-    ax.set_xlabel("Asset Class", fontsize=14)
-    ax.set_ylabel("Outliers (%)", fontsize=14)
-    ax.set_title(f"Outlier Percentage by Asset and Ablation ({metric.upper()})", fontsize=16)
+    ax.set_xlabel("Asset Class", fontsize=18)
+    ax.set_ylabel("Outliers (%)", fontsize=18)
+    ax.set_title(f"Outlier Percentage by Asset and Ablation ({metric.upper()})", fontsize=20)
     ax.set_ylim(0, max(5, plot_df["pct_outliers"].max() * 1.15))
     ax.legend(title="Ablation", bbox_to_anchor=(1.01, 1), loc="upper left")
     plt.xticks(rotation=20, ha="right")
@@ -621,7 +621,7 @@ def save_outlier_percentage_barplot(outlier_df, out_path, metric="cd", ablation_
         for bar in container:
             h = bar.get_height()
             labels.append(f"{h:.1f}" if np.isfinite(h) else "")
-        ax.bar_label(container, labels=labels, padding=2, fontsize=10)
+        ax.bar_label(container, labels=labels, padding=2, fontsize=14)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path, dpi=600, bbox_inches="tight")
