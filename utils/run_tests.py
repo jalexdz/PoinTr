@@ -100,9 +100,9 @@ def save_single_ablation_boxplot(df, metric, out_path, title, ylabel):
     ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
     ax.set_axisbelow(True)
 
-    ax.set_xlabel('Asset Class', fontsize=14)
-    ax.set_ylabel(ylabel, fontsize=14)
-    ax.set_title(title or f'{metric.upper()} by Asset', fontsize=16)
+    ax.set_xlabel('Asset Class', fontsize=18)
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.set_title(title or f'{metric.upper()} by Asset', fontsize=20)
     plt.xticks(rotation=20, ha="right")
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -195,7 +195,7 @@ def save_single_denoising_boxplot(partial_mean_by_asset, completion_mean_by_asse
 
     ax.set_xlabel('Asset Class', fontsize=18)
     ax.set_ylabel('Mean Point-to-GT Distance (mm)', fontsize=18)
-    ax.set_title('Partial vs. Completion Denoising Error (per-viewpoint mean)', fontsize=18)
+    ax.set_title('Partial vs. Completion Denoising Error (per-viewpoint mean)', fontsize=20)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path, dpi=600, bbox_inches='tight')

@@ -1,335 +1,349 @@
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 import argparse
 import os
-from collections import defaultdict
 import numpy as np
 import torch
 import open3d as o3d
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
+from datasets.io import IO
 from PIL import Image, ImageDraw, ImageFont
 
 from tools import builder
 from utils.config import cfg_from_yaml_file
 from tools.predictor import AdaPoinTrPredictor
 from utils.metrics import Metrics
-from datasets.io import IO
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Zero-shot real-world evaluation with ICP heuristic.
-#
-# GT is sampled from the provided mesh files (Poisson disk, n=8192),
-# matching exactly the sim pipeline.  The same GT cloud is reused for every
-# view of a given asset.
-#
-# Per (asset, view) produces a combined N-ablation-row grid:
-#
-#   ┌────────────┬──────────┬──────────┬──────────┬──────────┐
-#   │  Title                                                  │
-#   ├────────────┼──────────┼──────────┼──────────┼──────────┤
-#   │  Baseline  │  Part.   │  Pred.   │ KNN Err. │GT+ICP Ov.│
-#   ├────────────┼──────────┼──────────┼──────────┼──────────┤
-#   │  Ablation1 │  ...     │  ...     │  ...     │  ...     │
-#   └────────────┴──────────┴──────────┴──────────┴──────────┘
-#
-# Outputs:
-#   <out_path>/grids/combined/<asset>/view_XXXX.pdf   — ablation-row grids
-#   <out_path>/grids/individual/<abl>/<asset>/...pdf  — one 2×2 per ablation
-#   <out_path>/plots/strips/*.pdf                     — strip plots
-#   <out_path>/combined_results.csv
-#   <out_path>/latex_table.tex
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# Normalization helpers
+# ─────────────────────────────────────────────
+
+def _norm_from_partial(gt, partial):
+    centroid = np.mean(partial, axis=0)
+    p0 = partial - centroid
+    partial0 = p0 / 2.0
+    gt0 = (gt - centroid) / 2.0
+    return gt0.astype(np.float32), partial0.astype(np.float32), centroid
+
+
+# ─────────────────────────────────────────────
+# DataFrame helpers
+# ─────────────────────────────────────────────
+
+def per_sample_to_df(per_sample, ablation_name):
+    rows = []
+    for asset, entries in per_sample.items():
+        for e in entries:
+            rows.append({
+                "asset":                      asset,
+                "ablation":                   ablation_name,
+                "view_id":                    e["idx"],
+                "cd":                         float(e["cd"]),
+                "emd":                        float(e["emd"]),
+                "f1":                         float(e["f1"]),
+                "partial_to_gt_mean":         float(e["partial_to_gt_mean"]),
+                "partial_to_gt_std":          float(e["partial_to_gt_std"]),
+                "partial_to_gt_median":       float(e["partial_to_gt_median"]),
+                "completion_to_gt_mean":      float(e["completion_to_gt_mean"]),
+                "completion_to_gt_std":       float(e["completion_to_gt_std"]),
+                "completion_to_gt_median":    float(e["completion_to_gt_median"]),
+            })
+    df = pd.DataFrame(rows)
+    df["asset"] = pd.Categorical(
+        df["asset"],
+        categories=sorted(df["asset"].unique()),
+        ordered=True,
+    )
+    return df
+
+
+# ─────────────────────────────────────────────
+# Plot helpers
+# ─────────────────────────────────────────────
 
 RCPARAMS = {
-    "font.size":        13,
-    "axes.labelsize":   11,
-    "axes.titlesize":   13,
-    "xtick.labelsize":  10,
-    "ytick.labelsize":  10,
-    "legend.fontsize":  10,
+    "font.size":        25,
+    "axes.labelsize":   22,
+    "axes.titlesize":   25,
+    "xtick.labelsize":  20,
+    "ytick.labelsize":  20,
+    "legend.fontsize":  20,
+    "axes.ymargin":     0.08,   # tight top/bottom padding (default ~0.10)
 }
 
-
-# ─────────────────────────────────────────────
-# GT sampling
-# ─────────────────────────────────────────────
-
-def build_gt_dict(mesh_specs: list[tuple[str, str]],
-                  n_points: int = 8192,
-                  seed: int = 0) -> dict:
-    """
-    Sample GT point clouds from meshes once upfront.
-
-    Args:
-        mesh_specs : [(taxonomy_id, mesh_path), ...]
-        n_points   : Poisson disk sample count — match your sim eval (8192)
-        seed       : for reproducibility
-
-    Returns:
-        {taxonomy_id: (N, 3) float32 np.ndarray}
-    """
-    np.random.default_rng(seed)   # not used directly but sets global state
-    gt_dict = {}
-    for tid, mesh_path in mesh_specs:
-        print(f"  Sampling GT for '{tid}' from {mesh_path} ...")
-        mesh = o3d.io.read_triangle_mesh(mesh_path)
-        mesh.compute_vertex_normals()
-        if mesh.is_empty():
-            raise RuntimeError(f"Failed to load mesh: {mesh_path}")
-        gt_pts = np.asarray(
-            mesh.sample_points_poisson_disk(n_points).points,
-            dtype=np.float32,
-        )
-        gt_dict[tid] = gt_pts
-        print(f"    {gt_pts.shape[0]} points sampled.")
-    return gt_dict
+# Shared kwargs for all sns.boxplot calls — thicker lines, visible at 600 dpi
+_BOX_PROPS = dict(
+    boxprops=dict(linewidth=1.25),
+    whiskerprops=dict(linewidth=1.25),
+    capprops=dict(linewidth=1.25),
+    medianprops=dict(linewidth=1.25, color="black"),
+)
 
 
-# ─────────────────────────────────────────────
-# Normalization
-# ─────────────────────────────────────────────
+def save_single_ablation_boxplot(df, metric, out_path, title, ylabel):
+    """Single-ablation boxplot (no hue). One observation per viewpoint."""
+    assert metric in df.columns, f"Invalid metric: {metric}"
+    plt.rcParams.update(RCPARAMS)
 
-def _norm_from_partial(partial: np.ndarray):
-    centroid     = np.mean(partial, axis=0)
-    partial_norm = (partial - centroid) / 2.0
-    return partial_norm.astype(np.float32), centroid
+    plot_df = df[np.isfinite(df[metric])].copy()
+    fig, ax = plt.subplots(figsize=(4.5, 5.5), constrained_layout=True)
 
-
-# ─────────────────────────────────────────────
-# ICP
-# ─────────────────────────────────────────────
-
-def _fpfh_features(pcd, voxel_size: float, feat_radius_factor: float = 3.0):
-    """
-    Compute FPFH features for global registration.
-    feat_radius_factor controls the FPFH search radius relative to voxel_size.
-    Smaller = finer features (better for objects with small distinctive geometry
-    like holes or thin beams); larger = coarser but more robust to noise.
-    Default 3.0 is tighter than the previous 5.0.
-    """
-    pcd.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2.0, max_nn=30))
-    return o3d.pipelines.registration.compute_fpfh_feature(
-        pcd,
-        o3d.geometry.KDTreeSearchParamHybrid(
-            radius=voxel_size * feat_radius_factor, max_nn=100),
+    sns.boxplot(
+        data=plot_df, x="asset", y=metric,
+        showfliers=True, whis=1.5, ax=ax,
+        flierprops=dict(marker='d', markersize=3, markerfacecolor='black'),
+        **_BOX_PROPS,
     )
 
+    # grid
+    ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
+    ax.set_axisbelow(True)
 
-def run_icp(source_pts: np.ndarray, target_pts: np.ndarray,
-            max_correspondence_dist: float = 0.05,
-            max_iter: int = 100) -> dict:
+    ax.set_xlabel('Asset Class', fontsize=14)
+    ax.set_ylabel(ylabel, fontsize=14)
+    ax.set_title(title or f'{metric.upper()} by Asset', fontsize=16)
+    plt.xticks(rotation=20, ha="right")
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved {out_path}")
+
+
+def save_ablation_boxplot(df, metric, out_path, title, ylabel, ablation_order=None):
     """
-    Two-stage registration:
-      1. RANSAC global registration using FPFH features — handles arbitrary
-         rotational offsets between the real-world completion and the mesh GT.
-      2. Point-to-plane ICP refinement (two passes: tight + loose fallback).
-
-    Both clouds are normalised to unit scale before registration so the
-    voxel/distance parameters are scale-invariant, then the result is mapped
-    back to the original scale.
-
-    Returns:
-        registered_pts  — (N,3) transformed source (original scale)
-        fitness         — ICP inlier fraction [0,1]
-        inlier_rmse_mm  — ICP inlier RMSE (same units as inputs)
-        transformation  — (4,4) homogeneous transform (original scale)
+    Multi-ablation grouped boxplot (x=asset, hue=ablation).
+    One observation per viewpoint — same granularity as CD/F1.
     """
-    # ── Normalise both clouds to unit bounding-box scale ─────────────────────
-    # This makes voxel sizes and distance thresholds scale-invariant.
-    all_pts  = np.concatenate([source_pts, target_pts], axis=0)
-    extent   = all_pts.max(axis=0) - all_pts.min(axis=0)
-    scale    = float(np.linalg.norm(extent))
-    scale    = scale if scale > 1e-9 else 1.0
+    assert metric in df.columns, f"Invalid metric: {metric}"
+    plt.rcParams.update(RCPARAMS)
 
-    src_norm = source_pts.astype(np.float64) / scale
-    tgt_norm = target_pts.astype(np.float64) / scale
+    plot_df = df[np.isfinite(df[metric])].copy()
 
-    src_pcd = o3d.geometry.PointCloud()
-    src_pcd.points = o3d.utility.Vector3dVector(src_norm)
-
-    tgt_pcd = o3d.geometry.PointCloud()
-    tgt_pcd.points = o3d.utility.Vector3dVector(tgt_norm)
-
-    # ── Voxel downsample for RANSAC ───────────────────────────────────────────
-    # Downsample at 0.03 for speed; compute FPFH at a tighter radius (3x vs 5x)
-    # to resolve finer geometry like holes and thin beams.
-    voxel = 0.03
-    src_down = src_pcd.voxel_down_sample(voxel)
-    tgt_down = tgt_pcd.voxel_down_sample(voxel)
-
-    src_fpfh = _fpfh_features(src_down, voxel, feat_radius_factor=3.0)
-    tgt_fpfh = _fpfh_features(tgt_down, voxel, feat_radius_factor=3.0)
-
-    # Estimate normals on full-res target now so point-to-plane ICP works
-    # in both _quick_icp and the final refinement pass below.
-    tgt_pcd.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 2.0, max_nn=30))
-
-    # ── RANSAC global registration — run 5x, refine each, pick best ICP ──────
-    # 5 runs (up from 3) + ICP refinement per candidate, then pick the best
-    # ICP fitness. This handles 180° symmetry and sparse-beam cases better than
-    # picking by RANSAC fitness alone (RANSAC fitness doesn't account for the
-    # full cloud, ICP fitness does).
-    icp_dist_norm = max_correspondence_dist / scale
-
-    def _run_ransac():
-        return o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-            src_down, tgt_down, src_fpfh, tgt_fpfh,
-            mutual_filter=True,
-            max_correspondence_distance=voxel * 1.0,
-            estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
-            ransac_n=3,   # 3 (down from 4) → more diverse hypothesis sampling
-            checkers=[
-                o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
-                o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(voxel * 1.0),
-            ],
-            criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(500000, 0.9999),
+    if ablation_order is not None:
+        plot_df["ablation"] = pd.Categorical(
+            plot_df["ablation"], categories=ablation_order, ordered=True
         )
 
-    def _quick_icp(T_init):
-        """Fast ICP to evaluate a RANSAC candidate."""
-        return o3d.pipelines.registration.registration_icp(
-            src_pcd, tgt_pcd,
-            max_correspondence_distance=icp_dist_norm,
-            init=T_init,
-            estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-            criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=30),
-        )
+    fig, ax = plt.subplots(figsize=(12, 5.5), constrained_layout=True)
 
-    # Build a 180° rotation around the object's vertical axis (Z in normalised
-    # space) so we can explicitly test the symmetric alternative for each
-    # RANSAC candidate — this is the main failure mode for symmetric objects
-    # like tables where the support beam is the only disambiguating feature.
-    def _rotn_about_z_at_centroid(T, centroid, deg):
-        """Return T composed with a rotation of `deg` degrees about Z through centroid."""
-        cx, cy, cz = centroid
-        th  = np.deg2rad(deg)
-        c, s = np.cos(th), np.sin(th)
-        # Translate to origin, rotate, translate back
-        Rn = np.array([[ c, -s, 0., cx*(1-c) + cy*s],
-                       [ s,  c, 0., cy*(1-c) - cx*s],
-                       [ 0., 0., 1., 0.             ],
-                       [ 0., 0., 0., 1.             ]], dtype=np.float64)
-        return Rn @ T
+    sns.boxplot(
+        data=plot_df, x="asset", y=metric,
+        hue="ablation", hue_order=ablation_order,
+        showfliers=True, whis=1.5, gap=0.15, width=0.7,
+        ax=ax,
+        flierprops=dict(marker='d', markersize=3, markerfacecolor='black'),
+        **_BOX_PROPS,
+    )
 
-    tgt_centroid = np.mean(tgt_norm, axis=0)
+    # horizontal grid behind boxes
+    ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
+    ax.set_axisbelow(True)
 
-    best_result = None
-    for _ in range(10):
-        r_ransac = _run_ransac()
-        T0 = r_ransac.transformation
-        # Test original orientation and 180° flipped — pick best ICP fitness
-        for deg in [0, 90, 180, 270]:
-            T_cand = _rotn_about_z_at_centroid(T0, tgt_centroid, deg) if deg > 0 else T0
-            r_icp = _quick_icp(T_cand)
-            if best_result is None or r_icp.fitness > best_result.fitness:
-                best_result = r_icp
+    # vertical separators between asset groups
+    n_assets = plot_df["asset"].nunique()
+    for i in range(n_assets - 1):
+        ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
 
-    T_ransac = best_result.transformation  # best RANSAC→ICP candidate
+    ax.set_xlabel('Asset Class', fontsize=18)
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.set_title(title, fontsize=20)
+    ax.legend(title='Ablation', bbox_to_anchor=(1.01, 1), loc='upper left')
+    plt.xticks(rotation=20, ha="right")
 
-    # ── ICP refinement — point-to-plane, two passes ──────────────────────────
-    # (normals already estimated on tgt_pcd above)
-
-    def _icp(init_T, dist):
-        return o3d.pipelines.registration.registration_icp(
-            src_pcd, tgt_pcd,
-            max_correspondence_distance=dist,
-            init=init_T,
-            estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-            criteria=o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iter),
-        )
-
-    def _apply_T(pts, T):
-        pts_h = np.hstack([pts, np.ones((len(pts), 1))])
-        return (T @ pts_h.T).T[:, :3]
-
-    def _mean_nn_dist(T):
-        """
-        Mean nearest-neighbour distance from transformed source to target.
-        More sensitive than ICP fitness to small-feature misalignment because
-        it averages over ALL source points rather than counting inliers.
-        Operates in normalised space.
-        """
-        src_np = _apply_T(np.asarray(src_pcd.points), T)
-        tgt_np = np.asarray(tgt_pcd.points)
-        tgt_tmp = o3d.geometry.PointCloud()
-        tgt_tmp.points = o3d.utility.Vector3dVector(tgt_np)
-        tree_tmp = o3d.geometry.KDTreeFlann(tgt_tmp)
-        dists = []
-        for p in src_np:
-            _, _, d2 = tree_tmp.search_knn_vector_3d(p, 1)
-            dists.append(np.sqrt(d2[0]))
-        return float(np.mean(dists))
-
-    icp_dist_norm = max_correspondence_dist / scale
-    result = _icp(T_ransac, icp_dist_norm)
-
-    # Test all 4 cardinal rotations of the final ICP result and pick the one
-    # with lowest mean NN distance — catches 90°/180°/270° symmetric failures
-    # generically without any asset-specific logic.
-    best_nn = _mean_nn_dist(result.transformation)
-    for deg in [90, 180, 270]:
-        T_rot      = _rotn_about_z_at_centroid(result.transformation, tgt_centroid, deg)
-        result_rot = _icp(T_rot, icp_dist_norm)
-        nn         = _mean_nn_dist(result_rot.transformation)
-        if nn < best_nn:
-            best_nn = nn
-            result  = result_rot
-
-    # Fallback: if fitness is still poor, retry with 3x looser threshold
-    if result.fitness < 0.3:
-        result_loose = _icp(T_ransac, icp_dist_norm * 3.0)
-        if result_loose.fitness > result.fitness:
-            result = result_loose
-
-    # ── Apply transform and convert back to original scale ────────────────────
-    T_norm  = result.transformation.copy()
-    T_world = T_norm.copy()
-    T_world[:3, 3] *= scale   # rescale translation; rotation unchanged
-
-    src_world = o3d.geometry.PointCloud()
-    src_world.points = o3d.utility.Vector3dVector(source_pts.astype(np.float64))
-    src_world.transform(T_world)
-
-    return {
-        "registered_pts":  np.asarray(src_world.points).astype(np.float32),
-        "fitness":         float(result.fitness),
-        "inlier_rmse_mm":  float(result.inlier_rmse * scale),
-        "transformation":  T_world,
-    }
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved {out_path}")
 
 
-def compute_icp_metrics(registered_pts: np.ndarray,
-                         gt_pts: np.ndarray) -> dict:
+def save_single_denoising_boxplot(partial_mean_by_asset, completion_mean_by_asset, out_path):
     """
-    CD and F1 between ICP-registered completion and GT.
-    Normalizes both clouds the same way as the sim eval pipeline before
-    calling Metrics.get — centroid on gt, scale /2 — so τ=0.01 is meaningful.
-    CD is then multiplied by 2 and rescaled back to mm.
+    Per-ablation denoising boxplot.
+    Each observation = per-viewpoint mean point-to-GT distance (mm).
+    x=Asset, hue=Source (Partial vs Completion).
     """
-    # Normalize: centroid from gt, same /2 scale as _norm_from_partial
-    centroid = np.mean(gt_pts, axis=0)
-    reg_norm = (registered_pts - centroid) / 2.0
-    gt_norm  = (gt_pts         - centroid) / 2.0
+    records = []
+    for asset in sorted(partial_mean_by_asset.keys()):
+        for d in partial_mean_by_asset[asset]:
+            records.append({'Asset': asset, 'Source': 'Partial',
+                            'Mean Error (mm)': float(d) * 2})
+        for d in completion_mean_by_asset[asset]:
+            records.append({'Asset': asset, 'Source': 'Completion',
+                            'Mean Error (mm)': float(d) * 2})
 
-    reg_t = torch.from_numpy(reg_norm).float().cuda().unsqueeze(0)
-    gt_t  = torch.from_numpy(gt_norm).float().cuda().unsqueeze(0)
-    m     = Metrics.get(reg_t, gt_t, require_emd=False)
-    return {
-        "icp_cd_mm": float(2 * m[1]),   # ×2 converts normalized CD → mm
-        "icp_f1":    float(m[0]),
-    }
+    plot_df = pd.DataFrame(records)
+    plot_df = plot_df[np.isfinite(plot_df["Mean Error (mm)"])]
+
+    plt.rcParams.update(RCPARAMS)
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+
+    sns.boxplot(
+        data=plot_df, x="Asset", y="Mean Error (mm)", hue="Source",
+        ax=ax, whis=1.5, gap=0.3,
+        flierprops=dict(marker='d', markersize=3, markerfacecolor='black'),
+        **_BOX_PROPS,
+    )
+
+    ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
+    ax.set_axisbelow(True)
+
+    n_assets = plot_df["Asset"].nunique()
+    for i in range(n_assets - 1):
+        ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
+
+    ax.set_xlabel('Asset Class', fontsize=18)
+    ax.set_ylabel('Mean Point-to-GT Distance (mm)', fontsize=18)
+    ax.set_title('Partial vs. Completion Denoising Error (per-viewpoint mean)', fontsize=20)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved {out_path}")
+
+
+def _build_denoising_records(all_denoising):
+    """Shared helper: build long-form DataFrame from all_denoising list."""
+    records = []
+    for entry in all_denoising:
+        abl = entry['name']
+        for asset in sorted(entry['partial_means'].keys()):
+            for d in entry['partial_means'][asset]:
+                records.append({'Asset': asset, 'Ablation': abl,
+                                 'Source': 'Partial',    'Mean Error (mm)': float(d) * 2})
+            for d in entry['completion_means'][asset]:
+                records.append({'Asset': asset, 'Ablation': abl,
+                                 'Source': 'Completion', 'Mean Error (mm)': float(d) * 2})
+    return pd.DataFrame(records)
+
+
+def save_combined_denoising_boxplot(all_denoising, out_path, ablation_order=None):
+    """
+    Layout A — 2 panels: Partial | Completion, hue=Ablation.
+    Saved as: combined/denoising_by_source.pdf
+    """
+    plt.rcParams.update(RCPARAMS)
+    plot_df = _build_denoising_records(all_denoising)
+    plot_df = plot_df[np.isfinite(plot_df["Mean Error (mm)"])]
+
+    if ablation_order:
+        plot_df["Ablation"] = pd.Categorical(
+            plot_df["Ablation"], categories=ablation_order, ordered=True
+        )
+    asset_order = sorted(plot_df["Asset"].unique())
+    n_assets    = len(asset_order)
+    plot_df["Asset"] = pd.Categorical(
+        plot_df["Asset"], categories=asset_order, ordered=True
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 5), constrained_layout=True)
+    for ax, source in zip(axes, ['Partial', 'Completion']):
+        sub = plot_df[plot_df['Source'] == source]
+        sns.boxplot(
+            data=sub, x="Asset", y="Mean Error (mm)",
+            hue="Ablation", hue_order=ablation_order,
+            ax=ax, whis=1.5, gap=0.15, width=0.7,
+        flierprops=dict(marker='d', markersize=3, markerfacecolor='black'),
+            **_BOX_PROPS,
+        )
+        ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
+        ax.set_axisbelow(True)
+        for i in range(n_assets - 1):
+            ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
+        ax.set_title(f'{source} Point-to-GT Error', fontsize=20)
+        ax.set_xlabel('Asset Class', fontsize=18)
+        ax.set_ylabel('Mean Error (mm)', fontsize=18)
+        ax.legend(title='Ablation', bbox_to_anchor=(1.01, 1), loc='upper left')
+        ax.tick_params(axis='x', rotation=20)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved {out_path}")
+
+
+def save_combined_denoising_by_ablation_boxplot(all_denoising, out_path, ablation_order=None):
+    """
+    Layout B — N panels (one per ablation), each showing x=Asset, hue=Source.
+    Saved as: combined/denoising_by_ablation.pdf
+    """
+    plt.rcParams.update(RCPARAMS)
+    plot_df = _build_denoising_records(all_denoising)
+    plot_df = plot_df[np.isfinite(plot_df["Mean Error (mm)"])]
+
+    abl_list    = ablation_order if ablation_order else sorted(plot_df["Ablation"].unique())
+    asset_order = sorted(plot_df["Asset"].unique())
+    n_assets    = len(asset_order)
+    n_abls      = len(abl_list)
+
+    plot_df["Asset"] = pd.Categorical(
+        plot_df["Asset"], categories=asset_order, ordered=True
+    )
+
+    ymin = 0
+    ymax = plot_df["Mean Error (mm)"].quantile(0.99) * 1.1
+
+    fig, axes = plt.subplots(1, n_abls, figsize=(7 * n_abls, 5),
+                              constrained_layout=True, sharey=True)
+    if n_abls == 1:
+        axes = [axes]
+
+    source_order = ['Partial', 'Completion']
+
+    for ax, abl in zip(axes, abl_list):
+        sub = plot_df[plot_df['Ablation'] == abl]
+        sns.boxplot(
+            data=sub, x="Asset", y="Mean Error (mm)",
+            hue="Source", hue_order=source_order,
+            ax=ax, whis=1.5, gap=0.2, width=0.65,
+        flierprops=dict(marker='d', markersize=3, markerfacecolor='black'),
+            **_BOX_PROPS,
+        )
+        ax.yaxis.grid(True, linestyle='--', linewidth=0.8, color='lightgrey', zorder=0)
+        ax.set_axisbelow(True)
+        for i in range(n_assets - 1):
+            ax.axvline(x=i + 0.5, color='lightgrey', linewidth=1.0, linestyle='--', zorder=0)
+
+        ax.set_title(abl, fontsize=20, fontweight='bold')
+        ax.set_xlabel('Asset Class', fontsize=18)
+        ax.set_ylabel('Mean Point-to-GT Error (mm)' if ax == axes[0] else '', fontsize=18)
+        ax.set_ylim(ymin, ymax)
+        ax.legend(title='Source', bbox_to_anchor=(1.01, 1), loc='upper left')
+        ax.tick_params(axis='x', rotation=20)
+
+    fig.suptitle('Partial vs. Completion Point-to-GT Error by Ablation', fontsize=18)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=600, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved {out_path}")
 
 
 # ─────────────────────────────────────────────
-# Camera + rendering
+# Rendering helpers
 # ─────────────────────────────────────────────
 
-def _make_camera_params(pcd, fov_deg=60.0, width=512, height=512, visible=False):
-    bbox   = pcd.get_axis_aligned_bounding_box()
+def _compute_error_colormap(pred, gt, cmap='turbo', vmax=None):
+    pred_np = np.asarray(pred.points)
+    gt_np   = np.asarray(gt.points)
+    if pred_np.size == 0 or gt_np.size == 0:
+        return np.zeros((pred_np.shape[0], 3), dtype=np.float32), np.zeros((pred_np.shape[0],), dtype=np.float32)
+    tree  = o3d.geometry.KDTreeFlann(pred)
+    dists = np.zeros((gt_np.shape[0],), dtype=np.float32)
+    for i, p in enumerate(gt_np):
+        _, idx, dist2 = tree.search_knn_vector_3d(p, 1)
+        dists[i] = 1000 * np.sqrt(dist2[0]) if len(dist2) > 0 else 0.0
+    if vmax is None:
+        vmax = 100  # mm
+    norm   = np.clip(dists / float(vmax), 0.0, 1.0)
+    colors = plt.get_cmap(cmap)(norm)[:, :3]
+    return colors.astype(np.float64), dists
+
+
+def _make_camera_params_from_gt(gt_pcd, cam_offset_factor=(0.8, -1.0, 1.6),
+                                 fov_deg=60.0, width=512, height=512,
+                                 point_size=3.5, visible=False):
+    bbox   = gt_pcd.get_axis_aligned_bounding_box()
     center = bbox.get_center()
     extent = bbox.get_extent()
     radius = float(np.linalg.norm(extent) * 0.5)
@@ -338,8 +352,7 @@ def _make_camera_params(pcd, fov_deg=60.0, width=512, height=512, visible=False)
     z  = 2 * radius
     xy = np.array([1.0, 0.0], dtype=np.float64) * radius
     th = np.deg2rad(45.0)
-    Rz = np.array([[np.cos(th), -np.sin(th)],
-                   [np.sin(th),  np.cos(th)]], dtype=np.float64)
+    Rz = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]], dtype=np.float64)
     xy = Rz.dot(xy)
 
     cam_pos = center + np.array([xy[0], xy[1], z], dtype=np.float64)
@@ -347,10 +360,10 @@ def _make_camera_params(pcd, fov_deg=60.0, width=512, height=512, visible=False)
 
     vis = o3d.visualization.Visualizer()
     vis.create_window(width=width, height=height, visible=visible)
-    vis.add_geometry(pcd)
+    vis.add_geometry(gt_pcd)
     ctr   = vis.get_view_control()
     front = (center - cam_pos).astype(np.float64)
-    front /= np.linalg.norm(front) + 1e-12
+    front /= (np.linalg.norm(front) + 1e-12)
     ctr.set_lookat(center.tolist())
     ctr.set_front(front.tolist())
     ctr.set_up(cam_up.tolist())
@@ -359,16 +372,18 @@ def _make_camera_params(pcd, fov_deg=60.0, width=512, height=512, visible=False)
 
     fov_rad = np.deg2rad(float(fov_deg))
     fx = fy  = 0.5 * width / np.tan(0.5 * fov_rad)
-    intr = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy,
-                                              width * 0.5, height * 0.5)
+    intr = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, width * 0.5, height * 0.5)
     params.intrinsic        = intr
     params.intrinsic.width  = int(width)
     params.intrinsic.height = int(height)
     vis.destroy_window()
-    return params
+
+    return {"params": params, "center": center, "radius": radius,
+            "cam_pos": cam_pos, "cam_up": cam_up}
 
 
-def _render(pcd, params, width=512, height=512, point_size=3.5, visible=False):
+def _render_with_camera_params(pcd, params, width=512, height=512,
+                                point_size=3.5, visible=False):
     win_w = int(getattr(params.intrinsic, "width", width))
     win_h = int(getattr(params.intrinsic, "height", height))
     vis   = o3d.visualization.Visualizer()
@@ -390,168 +405,95 @@ def _render(pcd, params, width=512, height=512, point_size=3.5, visible=False):
     return (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
 
-def _knn_error_colormap(pred_pts_raw, gt_pts_raw, cmap="turbo", vmax_mm=100.0):
-    """
-    GT points coloured by nearest-neighbour distance to predicted cloud.
-    Distances in mm (x1000 from metre-scale inputs).
-    Clouds are centroid-aligned before distance computation, matching sim eval.
-    vmax_mm=100 is fixed so colours are comparable across views and ablations.
-    """
-    pred_pts = pred_pts_raw.copy().astype(np.float64)
-    gt_pts   = gt_pts_raw.copy().astype(np.float64)
-    pred_pts -= pred_pts.mean(axis=0)
-    gt_pts   -= gt_pts.mean(axis=0)
+def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
+                              predictor, asset, cd, f1, sel_type,
+                              include_error=True, panel_size=(512, 512),
+                              point_size=3.0, title_font_path=None):
+    assert os.path.exists(partial_pcd_path), f"Partial PCD not found: {partial_pcd_path}"
+    assert os.path.exists(gt_pcd_path),      f"GT PCD not found: {gt_pcd_path}"
 
-    if pred_pts.size == 0 or gt_pts.size == 0:
-        return np.zeros((gt_pts_raw.shape[0], 3)), np.zeros(gt_pts_raw.shape[0])
+    partial_pcd = o3d.io.read_point_cloud(partial_pcd_path)
+    gt_pcd      = o3d.io.read_point_cloud(gt_pcd_path)
+    gt_pts      = np.asarray(gt_pcd.points)
 
-    pred_pcd_err = o3d.geometry.PointCloud()
-    pred_pcd_err.points = o3d.utility.Vector3dVector(pred_pts)
-    tree  = o3d.geometry.KDTreeFlann(pred_pcd_err)
-    dists = np.zeros(gt_pts.shape[0], dtype=np.float32)
-    for i, p in enumerate(gt_pts):
-        _, _, d2 = tree.search_knn_vector_3d(p, 1)
-        dists[i] = 1000.0 * np.sqrt(d2[0]) if len(d2) > 0 else 0.0  # metres -> mm
-    norm   = np.clip(dists / float(vmax_mm), 0.0, 1.0)
-    colors = plt.get_cmap(cmap)(norm)[:, :3]
-    return colors.astype(np.float64), dists
+    input_raw = IO.get(partial_pcd_path).astype(np.float32)
+    gt_raw    = IO.get(gt_pcd_path).astype(np.float32)
+    gt_norm, input_norm, c = _norm_from_partial(gt_raw, input_raw)
+    complete = predictor.predict(input_norm)
+    complete = complete * 2.0 + c
 
+    complete_pcd = o3d.geometry.PointCloud()
+    complete_pcd.points = o3d.utility.Vector3dVector(complete)
+    complete_pcd.colors = o3d.utility.Vector3dVector(
+        np.tile([0.0, 1.0, 0.0], (complete.shape[0], 1))
+    )
 
-# ─────────────────────────────────────────────
-# Panel builder — 4 panels for one (view, ablation)
-# ─────────────────────────────────────────────
+    w, h   = panel_size
+    anchor = _make_camera_params_from_gt(gt_pcd, fov_deg=60.0, width=w, height=h,
+                                          point_size=point_size, visible=False)
+    params = anchor['params']
 
-def _build_4_panels(partial_pts, complete_pts, gt_pts, registered_pts,
-                    icp_transform,
-                    cam_params, panel_w, panel_h, point_size):
-    """
-    Returns four PIL Images matching sim eval colour conventions:
-        [0] Part.      — partial cloud  (red   [1,0,0])
-        [1] Pred.      — raw completion (green [0,1,0])
-        [2] KNN Err.   — GT coloured by dist to raw completion
-                         (turbo, fixed vmax=100mm, centroid-aligned)
-        [3] GT        — GT (blue [0,0,1]) + ICP-registered completion (green [0,1,0])
-                         rendered with camera anchored on the overlay bbox so
-                         orientation matches Pred.
-    """
-    part_pcd = o3d.geometry.PointCloud()
-    part_pcd.points = o3d.utility.Vector3dVector(partial_pts.astype(np.float64))
-    part_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([1.0, 0.0, 0.0], (partial_pts.shape[0], 1)))   # red
+    img_partial  = _render_with_camera_params(partial_pcd,  params, width=w, height=h, point_size=point_size)
+    img_complete = _render_with_camera_params(complete_pcd, params, width=w, height=h, point_size=point_size)
+    img_gt       = _render_with_camera_params(gt_pcd,       params, width=w, height=h, point_size=point_size)
+    panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
 
-    pred_pcd = o3d.geometry.PointCloud()
-    pred_pcd.points = o3d.utility.Vector3dVector(complete_pts.astype(np.float64))
-    pred_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 1.0, 0.0], (complete_pts.shape[0], 1)))  # green
+    pred_error_stats = None
+    if include_error:
+        pred_pts = np.asarray(complete_pcd.points).copy()
+        gt_pts_err = np.asarray(gt_pcd.points).copy()
 
-    gt_pcd = o3d.geometry.PointCloud()
-    gt_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
-    gt_pcd.colors = o3d.utility.Vector3dVector(
-        np.tile([0.0, 0.0, 1.0], (gt_pts.shape[0], 1)))        # blue
+        pred_pts -= pred_pts.mean(axis=0)
+        gt_pts_err -= gt_pts_err.mean(axis=0)
 
-    # ── Bring GT into the prediction's coordinate frame via ICP transform ────────
-    # icp_transform maps source (completion) → target (GT mesh frame).
-    # Its inverse maps GT mesh frame → completion frame, which is what we want
-    # so all 4 panels share cam_params and show consistent orientation.
-    T_inv = np.linalg.inv(icp_transform)
+        complete_pcd_err = o3d.geometry.PointCloud()
+        complete_pcd_err.points = o3d.utility.Vector3dVector(pred_pts)
 
-    def _apply_transform(pts, T):
-        pts_h = np.hstack([pts, np.ones((pts.shape[0], 1))])   # (N,4)
-        return (T @ pts_h.T).T[:, :3].astype(np.float32)
+        gt_pcd_err = o3d.geometry.PointCloud()
+        gt_pcd_err.points = o3d.utility.Vector3dVector(gt_pts_err)
 
-    gt_in_pred   = _apply_transform(gt_pts,          T_inv)
-    reg_in_pred  = _apply_transform(registered_pts,  T_inv)
+        err_colors, dists = _compute_error_colormap(complete_pcd_err, gt_pcd_err, cmap='turbo')
 
-    # ── KNN error map ──────────────────────────────────────────────────────────
-    # registered_pts and gt_pts are already aligned after ICP — compute distances
-    # directly between them (no centroid alignment needed). Distances in metres
-    # multiplied by 1000 to get mm. Render at gt_in_pred positions.
-    reg_pcd_err = o3d.geometry.PointCloud()
-    reg_pcd_err.points = o3d.utility.Vector3dVector(registered_pts.astype(np.float64))
-    tree_reg  = o3d.geometry.KDTreeFlann(reg_pcd_err)
-    err_dists = np.zeros(gt_pts.shape[0], dtype=np.float32)
-    for i, p in enumerate(gt_pts.astype(np.float64)):
-        _, _, d2 = tree_reg.search_knn_vector_3d(p, 1)
-        err_dists[i] = 1000.0 * np.sqrt(d2[0]) if len(d2) > 0 else 0.0
-    vmax_mm    = 100.0
-    norm       = np.clip(err_dists / vmax_mm, 0.0, 1.0)
-    err_colors = plt.get_cmap("turbo")(norm)[:, :3].astype(np.float64)
-    knn_pcd = o3d.geometry.PointCloud()
-    knn_pcd.points = o3d.utility.Vector3dVector(gt_in_pred.astype(np.float64))
-    knn_pcd.colors = o3d.utility.Vector3dVector(err_colors)
+        pred_err_pcd = o3d.geometry.PointCloud()
+        pred_err_pcd.points = o3d.utility.Vector3dVector(gt_pts.astype(np.float64))
+        pred_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
 
-    # ── GT + registered overlay in pred frame ─────────────────────────────────
-    n_gt  = gt_in_pred.shape[0]
-    n_reg = reg_in_pred.shape[0]
-    overlay_pcd = o3d.geometry.PointCloud()
-    overlay_pcd.points = o3d.utility.Vector3dVector(
-        np.concatenate([gt_in_pred, reg_in_pred], axis=0).astype(np.float64))
-    overlay_pcd.colors = o3d.utility.Vector3dVector(np.vstack([
-        np.tile([0.0, 0.0, 1.0], (n_gt,  1)),   # GT blue
-        np.tile([0.0, 1.0, 0.0], (n_reg, 1)),   # registered green
-    ]))
+        img_err = _render_with_camera_params(pred_err_pcd, params, width=w, height=h, point_size=3.5)
+        panels.append(Image.fromarray(img_err))
 
-    # All 4 panels use the same cam_params — consistent orientation throughout.
-    imgs = [
-        Image.fromarray(_render(part_pcd,    cam_params, width=panel_w, height=panel_h, point_size=point_size)),
-        Image.fromarray(_render(pred_pcd,    cam_params, width=panel_w, height=panel_h, point_size=point_size)),
-        Image.fromarray(_render(knn_pcd,     cam_params, width=panel_w, height=panel_h, point_size=point_size)),
-        Image.fromarray(_render(overlay_pcd, cam_params, width=panel_w, height=panel_h, point_size=point_size)),
-    ]
+        pred_error_stats = {
+            "mean": float(dists.mean()),
+            "max":  float(np.max(dists)),
+            "min":  float(np.min(dists)),
+        }
 
-    err_mean = float(err_dists.mean())
-    err_max  = float(err_dists.max())
-    return imgs, err_mean, err_max
-
-
-# ─────────────────────────────────────────────
-# Fonts
-# ─────────────────────────────────────────────
-
-def _load_fonts():
-    try:
-        bold  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 17)
-        reg   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
-        small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-    except Exception:
-        bold = reg = small = ImageFont.load_default()
-    return bold, reg, small
-
-
-# ─────────────────────────────────────────────
-# 2×2 individual grid
-# ─────────────────────────────────────────────
-
-def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
-                     caption_height=30, footer_padding=30,
-                     err_mean=None, err_max=None):
-    """
-    Identical layout to render_triplet_from_pcds.
-    Fonts: title=20pt bold, captions=15pt. Title height dynamic.
-    Grid = 2w x 2h, no inter-panel padding.
-      top-left: Part. | top-right: Pred.
-      bot-left: Err.  | bot-right: GT
-    """
     try:
         title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
         caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
     except Exception:
         title_font = caption_font = ImageFont.load_default()
 
-    err_label = (f"Err. (mean={err_mean:.2f} mm, max={err_max:.2f} mm)"
-                 if err_mean is not None else "KNN Err.")
-    cap_labels = ["Part.", "Pred.", err_label, "GT + Pred."]
+    pad_between    = 0
+    grid_w         = 2 * w + pad_between
+    grid_h         = 2 * h + pad_between
+    caption_height = 30
+    footer_padding = 30
 
-    tmp_draw      = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-    bbox_title    = tmp_draw.textbbox((0, 0), title_txt, font=title_font)
-    title_text_h  = bbox_title[3] - bbox_title[1]
-    title_pad_top = 4
-    title_height  = title_text_h + title_pad_top + 6
+    sel_label = {"lowest": "Best", "median": "Median", "highest": "Worst"}.get(
+        sel_type, sel_type.capitalize() if "outlier" in sel_type else "Unknown"
+    )
+    cd_txt    = f"CD: {cd:.2f} mm" if cd is not None else "CD: N/A"
+    f1_txt    = f"F1: {f1:.2f}"    if f1 is not None else "F1: N/A"
+    title_txt = f"{asset.capitalize()} {sel_label} ({cd_txt}, {f1_txt})"
 
-    pad_between = 0
-    w, h    = panel_w, panel_h
-    final_w = 2 * w + pad_between
-    final_h = title_height + 2 * h + pad_between + caption_height + footer_padding
+    tmp_draw       = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    bbox_title     = tmp_draw.textbbox((0, 0), title_txt, font=title_font)
+    title_text_h   = bbox_title[3] - bbox_title[1]
+    title_pad_top  = 4
+    title_pad_bot  = 6
+    title_height   = title_text_h + title_pad_top + title_pad_bot
+    final_w        = grid_w
+    final_h        = title_height + grid_h + caption_height + footer_padding
 
     out_image = Image.new("RGB", (final_w, final_h), (255, 255, 255))
     draw      = ImageDraw.Draw(out_image)
@@ -559,14 +501,21 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
 
     out_image.paste(panels[0], (0, y_panels))
     out_image.paste(panels[1], (w, y_panels))
-    out_image.paste(panels[2], (0, y_panels + h))
-    out_image.paste(panels[3], (w, y_panels + h))
+    out_image.paste(panels[3] if include_error else panels[2], (0, y_panels + h))
+    out_image.paste(panels[2],                                  (w, y_panels + h))
 
     bbox    = draw.textbbox((0, 0), title_txt, font=title_font)
     title_x = max(0, (final_w - (bbox[2] - bbox[0])) // 2)
     draw.text((title_x, title_pad_top), title_txt, fill=(0, 0, 0), font=title_font)
 
-    for i, label in enumerate(cap_labels):
+    caption_labels = ["Part.", "Pred."]
+    if include_error:
+        caption_labels.append(
+            f"Err. (mean={2*pred_error_stats['mean']:.2f} mm, max={2*pred_error_stats['max']:.2f} mm)"
+        )
+    caption_labels.append("GT")
+
+    for i, label in enumerate(caption_labels):
         row_i, col_i = i // 2, i % 2
         cell_x       = col_i * (w + pad_between)
         cell_y_top   = y_panels + row_i * (h + pad_between)
@@ -577,457 +526,361 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
         cap_y        = cell_y_top + h + max(2, (caption_height - cap_h) // 2)
         draw.text((cap_x, cap_y), label, fill=(0, 0, 0), font=caption_font)
 
-    return out_image
-
-def compose_ablation_row_grid(rows_data, asset, view_id,
-                               panel_w=384, panel_h=384,
-                               row_label_w=110, caption_h=28,
-                               row_gap=5, title_pad=36, footer=10):
-    """
-    rows_data: list of dicts per ablation:
-        abl_name, panels (list of 4 PIL Images), metrics dict
-
-    Layout:
-        ┌────────────┬──────────┬──────────┬──────────┬──────────┐
-        │  Title                                                  │
-        ├────────────┼──────────┼──────────┼──────────┼──────────┤
-        │  Baseline  │  Part.   │  Pred.   │ KNN Err. │GT+ICP Ov.│
-        │  CD/F1/fit │                                            │
-        ├────────────┼──────────┼──────────┼──────────┼──────────┤
-        │  Ablation1 │  ...                                       │
-        └────────────┴──────────┴──────────┴──────────┴──────────┘
-        │            │  Part.   │  Pred.   │ KNN Err. │GT+ICP Ov.│ ← captions
-    """
-    bold_font, reg_font, small_font = _load_fonts()
-
-    n_rows  = len(rows_data)
-    n_cols  = 4
-    total_w = row_label_w + n_cols * panel_w
-    total_h = title_pad + n_rows * panel_h + (n_rows - 1) * row_gap + caption_h + footer
-
-    out_img = Image.new("RGB", (total_w, total_h), (255, 255, 255))
-    draw    = ImageDraw.Draw(out_img)
-
-    title_txt = f"{asset.replace('_', ' ').capitalize()}  —  view {view_id}"
-    bb = draw.textbbox((0, 0), title_txt, font=bold_font)
-    tx = max(0, (total_w - (bb[2] - bb[0])) // 2)
-    draw.text((tx, 6), title_txt, fill=(0, 0, 0), font=bold_font)
-
-    for row_i, rd in enumerate(rows_data):
-        y_top = title_pad + row_i * (panel_h + row_gap)
-
-        for col_i, panel in enumerate(rd["panels"]):
-            px = row_label_w + col_i * panel_w
-            p  = panel.resize((panel_w, panel_h), Image.LANCZOS) \
-                 if panel.size != (panel_w, panel_h) else panel
-            out_img.paste(p, (px, y_top))
-
-        # Row label: ablation name + key metrics, vertically centred
-        m          = rd["metrics"]
-        label_lines = [
-            rd["abl_name"],
-            f"CD {m['icp_cd_mm']:.1f}mm",
-            f"F1 {m['icp_f1']:.2f}",
-            f"fit {m['fitness']:.2f}",
-        ]
-        line_h   = 14
-        total_lh = len(label_lines) * line_h
-        ly_start = y_top + (panel_h - total_lh) // 2
-        for li, line in enumerate(label_lines):
-            lbb = draw.textbbox((0, 0), line, font=small_font)
-            lw  = lbb[2] - lbb[0]
-            lx  = max(2, (row_label_w - lw) // 2)
-            draw.text((lx, ly_start + li * line_h), line, fill=(0, 0, 0), font=small_font)
-
-        # no separator lines — matches sim eval style (panel boundaries only)
-
-    # Column captions
-    cap_y0     = title_pad + n_rows * panel_h + (n_rows - 1) * row_gap
-    cap_labels = ["Part.", "Pred.", "KNN Err.", "GT+ICP Ov."]
-    for col_i, label in enumerate(cap_labels):
-        cbb = draw.textbbox((0, 0), label, font=reg_font)
-        cw, ch = cbb[2] - cbb[0], cbb[3] - cbb[1]
-        cx  = row_label_w + col_i * panel_w + (panel_w - cw) // 2
-        cy  = cap_y0 + max(2, (caption_h - ch) // 2)
-        draw.text((cx, cy), label, fill=(0, 0, 0), font=reg_font)
-
-    # no divider lines — matches sim eval style (panel boundaries only)
-
-    return out_img
-
-
-# ─────────────────────────────────────────────
-# Strip plots  (honest at n=5; shows all points + mean tick)
-# ─────────────────────────────────────────────
-
-def save_strip_plot(df, metric, ylabel, title, out_path, ablation_order=None):
-    plt.rcParams.update(RCPARAMS)
-    plot_df = df[np.isfinite(df[metric])].copy()
-
-    if ablation_order:
-        plot_df["ablation"] = pd.Categorical(
-            plot_df["ablation"], categories=ablation_order, ordered=True)
-
-    fig, ax = plt.subplots(figsize=(11, 5), constrained_layout=True)
-
-    sns.stripplot(
-        data=plot_df, x="asset", y=metric,
-        hue="ablation", hue_order=ablation_order,
-        dodge=True, jitter=0.12, size=7, alpha=0.8, ax=ax,
-    )
-
-    palette    = sns.color_palette(n_colors=len(ablation_order) if ablation_order
-                                   else plot_df["ablation"].nunique())
-    abl_list   = ablation_order or sorted(plot_df["ablation"].unique())
-    asset_list = list(plot_df["asset"].cat.categories
-                      if hasattr(plot_df["asset"], "cat")
-                      else sorted(plot_df["asset"].unique()))
-    n_abls     = len(abl_list)
-    dodge_w    = 0.8 / n_abls
-
-    for ai, abl in enumerate(abl_list):
-        color  = palette[ai]
-        offset = -0.4 + dodge_w * (ai + 0.5)
-        for xi, asset in enumerate(asset_list):
-            sub = plot_df[(plot_df["asset"] == asset) & (plot_df["ablation"] == abl)]
-            if sub.empty:
-                continue
-            mean_val = sub[metric].mean()
-            ax.plot([xi + offset - dodge_w * 0.35,
-                     xi + offset + dodge_w * 0.35],
-                    [mean_val, mean_val],
-                    color=color, linewidth=2.0, solid_capstyle="round", zorder=5)
-
-    for i in range(len(asset_list) - 1):
-        ax.axvline(x=i + 0.5, color="lightgrey", linewidth=1, linestyle="--", zorder=0)
-
-    ax.set_xlabel("Asset", fontsize=11)
-    ax.set_ylabel(ylabel, fontsize=11)
-    ax.set_title(title, fontsize=13)
-    ax.legend(title="Ablation", bbox_to_anchor=(1.01, 1), loc="upper left")
-    plt.xticks(rotation=20, ha="right")
-
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi=600, bbox_inches="tight")
-    plt.close()
-    print(f"  Saved {out_path}")
+    out_image.save(out_path)
+    print(f"  Render saved {out_path}")
+    return out_path
 
 
 # ─────────────────────────────────────────────
-# LaTeX table
+# Sample selection + graphic export
 # ─────────────────────────────────────────────
 
-def save_latex_table(df, out_path):
-    """mean ± std per (asset, ablation) across the n views."""
-    rows_tex = []
-    for (asset, ablation), g in df.groupby(["asset", "ablation"], sort=False):
-        def fmt(col):
-            return f"{g[col].mean():.2f} $\\pm$ {g[col].std():.2f}"
-        rows_tex.append(
-            f"  {asset} & {ablation} & {fmt('icp_cd_mm')} & {fmt('icp_f1')} "
-            f"& {fmt('fitness')} & {fmt('inlier_rmse_mm')} \\\\"
+def compute_samples(df, ablation_name, predictor,
+                    out_csv, job_out_dir, metric_col="cd"):
+    assert metric_col in df.columns
+
+    picks = []
+    for asset, g in df.groupby("asset"):
+        vals = g[metric_col].dropna().values
+        if len(vals) == 0:
+            continue
+        q1, q2, q3 = np.percentile(vals, [25, 50, 75])
+        iqr         = q3 - q1
+        non_outlier = g[(g[metric_col] >= q1 - 1.5*iqr) & (g[metric_col] <= q3 + 1.5*iqr)].copy()
+        outlier_df  = g[(g[metric_col] <  q1 - 1.5*iqr) | (g[metric_col] >  q3 + 1.5*iqr)].copy()
+        if len(non_outlier) == 0:
+            non_outlier = g.copy()
+
+        def closest(value):
+            idx = (g[metric_col] - value).abs().idxmin()
+            return idx, g.loc[idx]
+
+        for kind, value in [("lowest",  non_outlier[metric_col].min()),
+                             ("median",  q2),
+                             ("highest", non_outlier[metric_col].max())]:
+            try:
+                idx, row = closest(value)
+                picks.append((asset, metric_col, kind, idx, row))
+            except Exception:
+                print(f"[WARN] Couldn't pick {kind} for {asset}")
+
+        for oi, orow in outlier_df.iterrows():
+            picks.append((asset, metric_col, "outlier", oi, orow))
+
+    pick_rows = []
+    for asset, metric_used, sel_type, idx, row in picks:
+        pick_row = {
+            "asset": asset, "ablation": ablation_name,
+            "selection_type": sel_type, "selection_metric": metric_used,
+            "df_index": int(idx), "view_id": int(row["view_id"]),
+        }
+        pick_row.update({c: float(row[c]) for c in ("cd", "emd", "f1") if c in df.columns})
+        pick_rows.append(pick_row)
+
+    picks_df = pd.DataFrame(pick_rows)
+    picks_df.to_csv(out_csv, index=False)
+    print(f"  Saved {out_csv}")
+
+    abl_tag          = ''.join(ablation_name.strip().lower().split())
+    outlier_counters = {}
+    for _, row in picks_df.iterrows():
+        asset    = row["asset"]
+        sel_type = row["selection_type"]
+        cd_val   = float(row["cd"])
+        f1_val   = float(row["f1"])
+        view_id  = int(row["view_id"])
+
+        if sel_type == "outlier":
+            outlier_counters[asset] = outlier_counters.get(asset, 0) + 1
+            display_sel = f"outlier {outlier_counters[asset]}"
+        else:
+            display_sel = sel_type
+
+        partial_pcd_path = os.path.join(
+            "data", f"NRG_{abl_tag}",
+            "projected_partial_noise", asset, asset, "models", f"{view_id}.pcd"
+        )
+        gt_pcd_path = os.path.join(
+            "data", f"NRG_{abl_tag}",
+            "NRG_pc", f"{asset}-{asset}-{view_id}.pcd"
+        )
+        out_graphic = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
+
+        render_triplet_from_pcds(
+            partial_pcd_path, gt_pcd_path, out_graphic,
+            predictor, asset,
+            cd=cd_val, f1=f1_val, sel_type=display_sel,
+            include_error=True, panel_size=(512, 512), point_size=2.0,
         )
 
-    lines = [
-        r"\begin{table}[ht]",
-        r"\centering",
-        r"\caption{Zero-Shot Real-World Evaluation (ICP Heuristic, mean\,$\pm$\,std)}",
-        r"\label{tab:zeroshot_icp}",
-        r"\begin{tabular}{llrrrr}",
-        r"\toprule",
-        r"Asset & Ablation & CD\textsubscript{ICP} (mm) & F1\textsubscript{ICP} "
-        r"& ICP Fitness & ICP RMSE (mm) \\",
-        r"\midrule",
-    ] + rows_tex + [
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\end{table}",
-    ]
-
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    print(f"  Saved {out_path}")
+    return picks_df
 
 
 # ─────────────────────────────────────────────
-# Main loop
+# Denoising metrics
 # ─────────────────────────────────────────────
 
-def run_zero_shot(ablation_configs: list[dict],
-                  txt_path: str,
-                  data_dir: str,
-                  mesh_specs: list[tuple[str, str]],
-                  out_path: str,
-                  gt_n_points: int     = 8192,
-                  gt_seed: int         = 0,
-                  panel_size: int      = 512,
-                  grid_panel_size: int = 384,
-                  point_size: float    = 2.0,
-                  icp_max_dist: float  = 0.1,
-                  icp_max_iter: int    = 100,
-                  exclude_assets: list = None):
+def compute_denoising_metrics(partial_norm, complete, gt_norm):
     """
-    Args:
-        mesh_specs   : [(taxonomy_id, mesh_path), ...]  one per asset.
-                       GT is sampled once via Poisson disk (gt_n_points=8192)
-                       and reused for every view of that asset.
-        data_dir     : root containing <tid>/<mid>/models/<vid>.pcd
-        txt_path     : lines of form <tid>-<mid>-<vid>.pcd
-        icp_max_dist : ICP inlier threshold — must be in the same units as your
-                       point clouds.  If clouds are in metres start around 0.05;
-                       if in mm start around 50.
+    For each partial point p:
+      - partial_to_gt:    dist(p, nearest GT point)
+      - completion_to_gt: dist(nearest completion point to p, nearest GT point)
+
+    Returns per-viewpoint summary scalars only (no raw arrays).
     """
-    # ── Seed all RNGs for reproducibility ────────────────────────────────────
-    import random as _random
-    _random.seed(gt_seed)
-    np.random.seed(gt_seed)
-    o3d.utility.random.seed(gt_seed)
+    gt_pcd = o3d.geometry.PointCloud()
+    gt_pcd.points = o3d.utility.Vector3dVector(gt_norm.astype(np.float64))
+    gt_tree = o3d.geometry.KDTreeFlann(gt_pcd)
 
-    # ── GT ────────────────────────────────────────────────────────────────────
-    print("Sampling GT from meshes...")
-    gt_dict = build_gt_dict(mesh_specs, n_points=gt_n_points, seed=gt_seed)
-    print()
+    complete_pcd = o3d.geometry.PointCloud()
+    complete_pcd.points = o3d.utility.Vector3dVector(complete.astype(np.float64))
+    complete_tree = o3d.geometry.KDTreeFlann(complete_pcd)
 
-    # ── Models ───────────────────────────────────────────────────────────────
-    print("Loading models...")
-    device     = "cuda" if torch.cuda.is_available() else "cpu"
-    predictors = []
-    for abl in ablation_configs:
-        print(f"  Loading '{abl['name']}'...")
-        config = cfg_from_yaml_file(abl["cfg_path"])
-        model  = builder.model_builder(config.model)
-        builder.load_model(model, abl["ckpt_path"])
-        model.to(device)
-        model.eval()
-        predictors.append((abl["name"], AdaPoinTrPredictor(model, normalize=False)))
-    print(f"  {len(predictors)} model(s) loaded.\n")
+    partial_to_gt    = []
+    completion_to_gt = []
 
-    ablation_order = [a["name"] for a in ablation_configs]
+    for p in partial_norm.astype(np.float64):
+        _, _, d2_pg = gt_tree.search_knn_vector_3d(p, 1)
+        partial_to_gt.append(np.sqrt(d2_pg[0]))
 
-    # ── Test list ─────────────────────────────────────────────────────────────
-    with open(txt_path) as f:
+        _, idx_c, _ = complete_tree.search_knn_vector_3d(p, 1)
+        cp = np.asarray(complete_pcd.points)[idx_c[0]]
+        _, _, d2_cg = gt_tree.search_knn_vector_3d(cp, 1)
+        completion_to_gt.append(np.sqrt(d2_cg[0]))
+
+    partial_to_gt    = np.asarray(partial_to_gt)
+    completion_to_gt = np.asarray(completion_to_gt)
+
+    return {
+        'partial_to_gt_mean':      float(partial_to_gt.mean()),
+        'partial_to_gt_std':       float(partial_to_gt.std()),
+        'partial_to_gt_median':    float(np.median(partial_to_gt)),
+        'completion_to_gt_mean':   float(completion_to_gt.mean()),
+        'completion_to_gt_std':    float(completion_to_gt.std()),
+        'completion_to_gt_median': float(np.median(completion_to_gt)),
+    }
+
+
+# ─────────────────────────────────────────────
+# Per-ablation inference runner
+# ─────────────────────────────────────────────
+
+def run_single_ablation(cfg_path, ckpt_path, test_txt_path, ablation_name, out_path):
+    print(f"\n=== Ablation: {ablation_name} ===")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    config = cfg_from_yaml_file(cfg_path)
+    model  = builder.model_builder(config.model)
+    builder.load_model(model, ckpt_path)
+    model.to(device)
+    model.eval()
+
+    predictor = AdaPoinTrPredictor(model, normalize=False)
+
+    with open(test_txt_path, "r") as f:
         lines = [ln.strip() for ln in f if ln.strip()]
 
     file_list = []
     for line in lines:
-        tid = line.split("-")[0].split("/")[-1]
-        mid = line.split("-")[1]
-        vid = int(line.split("-")[2].split(".")[0])
-        file_list.append({"taxonomy_id": tid, "model_id": mid, "view_id": vid})
+        taxonomy_id = line.split('-')[0].split('/')[-1]
+        model_id    = line.split('-')[1]
+        view_id     = int(line.split('-')[2].split('.')[0])
+        file_list.append({"taxonomy_id": taxonomy_id, "model_id": model_id,
+                           "view_id": view_id, "file_path": line})
 
-    print(f"  {len(file_list)} samples to process.\n")
+    print(f"  {len(file_list)} samples loaded")
 
-    # ── Inference ─────────────────────────────────────────────────────────────
-    all_records = []
-    view_rows   = defaultdict(list)   # (tid, vid) → list of row dicts
+    abl_tag = ''.join(ablation_name.strip().lower().split())
+
+    per_sample               = {}
+    partial_mean_by_asset    = {}
+    completion_mean_by_asset = {}
 
     for sample in file_list:
-        tid = sample["taxonomy_id"]
-        mid = sample["model_id"]
-        vid = sample["view_id"]
+        file_path    = os.path.join("data", f"NRG_{abl_tag}", sample['file_path'])
+        partial_path = os.path.join("data", f"NRG_{abl_tag}",
+                                    "projected_partial_noise",
+                                    sample['taxonomy_id'], sample['model_id'],
+                                    "models", f"{sample['view_id']}.pcd")
 
-        partial_path = os.path.join(data_dir, tid, mid, "models", f"{vid}.pcd")
-        if not os.path.exists(partial_path):
-            print(f"  [WARN] Partial not found: {partial_path}")
-            continue
+        partial = IO.get(partial_path).astype(np.float32)
+        gt0     = IO.get(file_path).astype(np.float32)
+        gt, partial_norm, c = _norm_from_partial(gt0, partial)
+        complete = predictor.predict(partial_norm)
 
-        if tid not in gt_dict:
-            print(f"  [WARN] No mesh registered for '{tid}' — skipping")
-            continue
+        denoising = compute_denoising_metrics(partial_norm, complete, gt)
 
-        partial_pts = IO.get(partial_path).astype(np.float32)
-        gt_pts      = gt_dict[tid]   # same cloud reused for all views of this asset
+        asset = sample['model_id']
+        if asset not in partial_mean_by_asset:
+            partial_mean_by_asset[asset]    = []
+            completion_mean_by_asset[asset] = []
 
-        for abl_name, predictor in predictors:
-            print(f"  {tid}  view {vid}  [{abl_name}]")
+        partial_mean_by_asset[asset].append(denoising['partial_to_gt_mean'])
+        completion_mean_by_asset[asset].append(denoising['completion_to_gt_mean'])
 
-            partial_norm, centroid = _norm_from_partial(partial_pts)
-            complete_pts           = predictor.predict(partial_norm) * 2.0 + centroid
-
-            # Camera anchored on combined partial+completion bbox so Pred. never clips
-            anchor_pcd = o3d.geometry.PointCloud()
-            anchor_pcd.points = o3d.utility.Vector3dVector(
-                np.concatenate([partial_pts, complete_pts], axis=0).astype(np.float64))
-            cam_params = _make_camera_params(anchor_pcd, fov_deg=60.0,
-                                              width=panel_size, height=panel_size)
-
-            # Retry up to 5 times if fitness is poor — RANSAC is stochastic
-            # and occasionally picks a bad initialisation on sparse inputs.
-            icp_result = run_icp(complete_pts, gt_pts,
-                                  max_correspondence_dist=icp_max_dist,
-                                  max_iter=icp_max_iter)
-            for _retry in range(4):
-                if icp_result["fitness"] >= 0.5:
-                    break
-                candidate = run_icp(complete_pts, gt_pts,
-                                     max_correspondence_dist=icp_max_dist,
-                                     max_iter=icp_max_iter)
-                if candidate["fitness"] > icp_result["fitness"]:
-                    icp_result = candidate
-            icp_metrics = compute_icp_metrics(icp_result["registered_pts"], gt_pts)
-
-            metrics = {
-                "fitness":        icp_result["fitness"],
-                "inlier_rmse_mm": icp_result["inlier_rmse_mm"],
-                "icp_cd_mm":      icp_metrics["icp_cd_mm"],
-                "icp_f1":         icp_metrics["icp_f1"],
-            }
-
-            panels, err_mean, err_max = _build_4_panels(
-                partial_pts, complete_pts, gt_pts,
-                icp_result["registered_pts"],
-                icp_result["transformation"],
-                cam_params, panel_size, panel_size, point_size,
-            )
-
-            # Individual 2×2 grid
-            abl_tag   = "".join(abl_name.strip().lower().split())
-            title_txt = (
-                f"{abl_name} - {tid.replace('_',' ').capitalize()} {vid} "
-                f"(CD: {metrics['icp_cd_mm']:.2f} mm, F1: {metrics['icp_f1']:.2f}, "
-                f"Fit: {metrics['fitness']:.2f}, RMSE: {metrics['inlier_rmse_mm']:.2f} mm)"
-            )
-            grid_2x2 = compose_2x2_grid(panels, title_txt,
-                                         panel_w=panel_size, panel_h=panel_size,
-                                         err_mean=err_mean, err_max=err_max)
-            ind_path = os.path.join(out_path, "grids", "individual",
-                                    abl_tag, tid, f"view_{vid:04d}.pdf")
-            os.makedirs(os.path.dirname(ind_path), exist_ok=True)
-            grid_2x2.save(ind_path)
-            print(f"    Saved {ind_path}")
-
-            view_rows[(tid, vid)].append({
-                "abl_name": abl_name,
-                "panels":   panels,
-                "metrics":  metrics,
-            })
-
-            all_records.append({
-                "asset":            tid,
-                "ablation":         abl_name,
-                "view_id":          vid,
-                "fitness":          metrics["fitness"],
-                "inlier_rmse_mm":   metrics["inlier_rmse_mm"],
-                "icp_cd_mm":        metrics["icp_cd_mm"],
-                "icp_f1":           metrics["icp_f1"],
-                "registration_ok":  metrics["fitness"] >= 0.5,
-            })
-
-    # ── Combined ablation-row grids ───────────────────────────────────────────
-    for (tid, vid), rows in view_rows.items():
-        combined  = compose_ablation_row_grid(
-            rows, asset=tid, view_id=vid,
-            panel_w=grid_panel_size, panel_h=grid_panel_size,
+        _metrics = Metrics.get(
+            torch.from_numpy(complete).float().cuda().unsqueeze(0),
+            torch.from_numpy(gt).float().cuda().unsqueeze(0),
+            require_emd=True,
         )
-        comb_path = os.path.join(out_path, "grids", "combined", tid, f"view_{vid:04d}.pdf")
-        os.makedirs(os.path.dirname(comb_path), exist_ok=True)
-        combined.save(comb_path)
-        print(f"  Saved {comb_path}")
 
-    # ── DataFrame + CSV ───────────────────────────────────────────────────────
-    df = pd.DataFrame(all_records)
-    df["asset"] = pd.Categorical(df["asset"],
-                                  categories=sorted(df["asset"].unique()), ordered=True)
-    csv_path = os.path.join(out_path, "combined_results.csv")
-    os.makedirs(out_path, exist_ok=True)
-    df.to_csv(csv_path, index=False)
-    print(f"\n  Saved {csv_path}")
+        if asset not in per_sample:
+            per_sample[asset] = []
 
-    # ── Strip plots + LaTeX table (exclude_assets filtered + failed registrations) ──
-    plot_df = df[(df["registration_ok"]) & (~df["asset"].isin(exclude_assets or []))].copy()
-    if not plot_df.empty:
-        plot_df["asset"] = pd.Categorical(
-            plot_df["asset"],
-            categories=[a for a in df["asset"].cat.categories
-                        if a not in (exclude_assets or [])],
-            ordered=True,
+        per_sample[asset].append({
+            'idx':                     sample['view_id'],
+            'cd':                      2 * _metrics[1],
+            'emd':                     2 * _metrics[3],
+            'f1':                      _metrics[0],
+            'partial_to_gt_mean':      2 * denoising['partial_to_gt_mean'],
+            'partial_to_gt_std':       2 * denoising['partial_to_gt_std'],
+            'partial_to_gt_median':    2 * denoising['partial_to_gt_median'],
+            'completion_to_gt_mean':   2 * denoising['completion_to_gt_mean'],
+            'completion_to_gt_std':    2 * denoising['completion_to_gt_std'],
+            'completion_to_gt_median': 2 * denoising['completion_to_gt_median'],
+        })
+
+    df = per_sample_to_df(per_sample, ablation_name)
+
+    partial_mean_by_asset    = {k: np.array(v, dtype=np.float32) for k, v in partial_mean_by_asset.items()}
+    completion_mean_by_asset = {k: np.array(v, dtype=np.float32) for k, v in completion_mean_by_asset.items()}
+
+    # ── Per-asset denoising summary CSV ──────────────────────────────────────
+    denoising_rows = []
+    for asset in sorted(partial_mean_by_asset.keys()):
+        p = partial_mean_by_asset[asset]
+        c = completion_mean_by_asset[asset]
+        denoising_rows.append({
+            "asset":                         asset,
+            "ablation":                      ablation_name,
+            "n_viewpoints":                  int(len(p)),
+            "partial_mean_of_means_mm":      float(p.mean())     * 2,
+            "partial_std_of_means_mm":       float(p.std())      * 2,
+            "partial_median_of_means_mm":    float(np.median(p)) * 2,
+            "completion_mean_of_means_mm":   float(c.mean())     * 2,
+            "completion_std_of_means_mm":    float(c.std())      * 2,
+            "completion_median_of_means_mm": float(np.median(c)) * 2,
+            "denoising_ratio":               float(p.mean()) / max(float(c.mean()), 1e-9),
+        })
+
+    denoising_df  = pd.DataFrame(denoising_rows)
+    denoising_csv = os.path.join(out_path, f"denoising_{abl_tag}.csv")
+    denoising_df.to_csv(denoising_csv, index=False)
+    print(f"  Saved {denoising_csv}")
+
+    # ── Per-ablation individual plots ─────────────────────────────────────────
+    abl_plot_dir = os.path.join(out_path, "plots", "boxplots", abl_tag)
+    save_single_ablation_boxplot(df, "cd",  os.path.join(abl_plot_dir, "cd.pdf"),
+                                  title=f"[{ablation_name}] CD by Asset",  ylabel="CD (mm)")
+    save_single_ablation_boxplot(df, "f1",  os.path.join(abl_plot_dir, "f1.pdf"),
+                                  title=f"[{ablation_name}] F1 by Asset",  ylabel="F1")
+    save_single_ablation_boxplot(df, "emd", os.path.join(abl_plot_dir, "emd.pdf"),
+                                  title=f"[{ablation_name}] EMD by Asset", ylabel="EMD (mm)")
+    save_single_denoising_boxplot(partial_mean_by_asset, completion_mean_by_asset,
+                                   os.path.join(abl_plot_dir, "denoising.pdf"))
+
+    # ── Per-ablation graphics (best/median/worst/outliers) ───────────────────
+    abl_graphics_dir = os.path.join(out_path, "plots", "graphics", abl_tag)
+    df_no_abl = df.drop(columns=["ablation"])
+    compute_samples(
+        df_no_abl, ablation_name, predictor,
+        out_csv=os.path.join(out_path, f"results_{abl_tag}_by_cd.csv"),
+        job_out_dir=abl_graphics_dir,
+        metric_col="cd",
+    )
+
+    df["ablation"] = ablation_name
+    return df, partial_mean_by_asset, completion_mean_by_asset
+
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+
+def main(ablation_configs, out_path):
+    all_dfs        = []
+    all_denoising  = []
+    ablation_order = [a['name'] for a in ablation_configs]
+
+    for abl in ablation_configs:
+        df, partial_means, completion_means = run_single_ablation(
+            abl['cfg_path'], abl['ckpt_path'], abl['test_txt_path'],
+            abl['name'], out_path,
         )
-    strip_dir = os.path.join(out_path, "plots", "strips")
-    for col, ylabel, title in [
-        ("icp_cd_mm",      "ICP CD (mm)",         "Chamfer Distance after ICP"),
-        ("icp_f1",         "ICP F1",               "F1 Score after ICP"),
-        ("fitness",        "ICP Fitness",          "ICP Registration Fitness"),
-        ("inlier_rmse_mm", "ICP Inlier RMSE (mm)", "ICP Inlier RMSE"),
-    ]:
-        save_strip_plot(plot_df, col, ylabel, title,
-                        os.path.join(strip_dir, f"{col}.pdf"),
-                        ablation_order=ablation_order)
+        all_dfs.append(df)
+        all_denoising.append({
+            'name':             abl['name'],
+            'partial_means':    partial_means,
+            'completion_means': completion_means,
+        })
 
-    # ── LaTeX table ───────────────────────────────────────────────────────────
-    save_latex_table(plot_df, os.path.join(out_path, "latex_table.tex"))
+    # ── Combined denoising CSV ────────────────────────────────────────────────
+    abl_tags = [''.join(a['name'].strip().lower().split()) for a in ablation_configs]
+    combined_denoising_df = pd.concat(
+        [pd.read_csv(os.path.join(out_path, f"denoising_{tag}.csv")) for tag in abl_tags],
+        ignore_index=True,
+    )
+    combined_denoising_df.to_csv(os.path.join(out_path, "combined_denoising.csv"), index=False)
+    print(f"  Saved combined_denoising.csv")
+
+    # ── Combined results CSV ──────────────────────────────────────────────────
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    combined_df.to_csv(os.path.join(out_path, "combined_results.csv"), index=False)
+
+    combined_plot_dir = os.path.join(out_path, "plots", "boxplots", "combined")
+
+    save_ablation_boxplot(combined_df, "cd",
+                           os.path.join(combined_plot_dir, "cd.pdf"),
+                           title="Chamfer Distance by Asset and Ablation",
+                           ylabel="CD (mm)", ablation_order=ablation_order)
+    save_ablation_boxplot(combined_df, "f1",
+                           os.path.join(combined_plot_dir, "f1.pdf"),
+                           title="F1 Score by Asset and Ablation",
+                           ylabel="F1", ablation_order=ablation_order)
+    save_ablation_boxplot(combined_df, "emd",
+                           os.path.join(combined_plot_dir, "emd.pdf"),
+                           title="EMD by Asset and Ablation",
+                           ylabel="EMD (mm)", ablation_order=ablation_order)
+
+    save_combined_denoising_boxplot(
+        all_denoising,
+        os.path.join(combined_plot_dir, "denoising_by_source.pdf"),
+        ablation_order=ablation_order,
+    )
+    save_combined_denoising_by_ablation_boxplot(
+        all_denoising,
+        os.path.join(combined_plot_dir, "denoising_by_ablation.pdf"),
+        ablation_order=ablation_order,
+    )
 
     print(f"\nAll done. Results in {out_path}")
 
 
-# ─────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Zero-shot real-world evaluation with ICP heuristic."
+        description="Evaluate AdaPoinTr across multiple ablations and produce combined plots."
     )
+    parser.add_argument("--out_path", type=str, default="./results",
+                        help="Root output directory")
     parser.add_argument(
-        "--ablation", action="append", nargs=3,
-        metavar=("NAME", "CFG", "CKPT"),
-        help="Repeat for each ablation: NAME cfg_path ckpt_path",
-    )
-    parser.add_argument(
-        "--mesh", action="append", nargs=2,
-        metavar=("TAXONOMY_ID", "MESH_PATH"),
+        "--ablation", action="append", nargs=4,
+        metavar=("NAME", "CFG", "CKPT", "TXT"),
         help=(
-            "Mesh for one asset: TAXONOMY_ID mesh_path.  Repeat for each asset.\n"
-            "  --mesh glovebox    meshes/glovebox.stl\n"
-            "  --mesh officechair meshes/officechair.stl\n"
-            "  --mesh woodentable meshes/woodentable.stl\n"
-            "  --mesh trashcan    meshes/trashcan.stl"
+            "One ablation: NAME cfg_path ckpt_path test_txt_path. Repeat for each ablation.\n"
+            "  --ablation Baseline     cfgs/bl.yaml ckpts/bl.pth test.txt\n"
+            "  --ablation 'Ablation 1' cfgs/a1.yaml ckpts/a1.pth test.txt\n"
+            "  --ablation 'Ablation 2' cfgs/a2.yaml ckpts/a2.pth test.txt"
         ),
     )
-    parser.add_argument("--txt_path",  required=True,
-                        help="Test list txt — lines: taxonomy_id-model_id-view_id.pcd")
-    parser.add_argument("--data_dir",  required=True,
-                        help="Root of projected_partial_noise/ "
-                             "(<data_dir>/<tid>/<mid>/models/<vid>.pcd)")
-    parser.add_argument("--out_path",       default="./zeroshot_results")
-    parser.add_argument("--gt_n_points",    type=int,   default=8192,
-                        help="Poisson disk sample count for GT (default: 8192)")
-    parser.add_argument("--gt_seed",        type=int,   default=0)
-    parser.add_argument("--panel_size",     type=int,   default=512)
-    parser.add_argument("--grid_panel_size",type=int,   default=384,
-                        help="Panel size in the combined ablation-row grid")
-    parser.add_argument("--point_size",     type=float, default=2.0)
-    parser.add_argument("--icp_max_dist",   type=float, default=0.1,
-                        help="ICP max correspondence distance (same units as point clouds)")
-    parser.add_argument("--icp_max_iter",   type=int,   default=100)
-    parser.add_argument("--exclude_assets", nargs="*",  default=[],
-                        help="Asset taxonomy IDs to exclude from plots and LaTeX table "
-                             "(grids are unaffected). E.g. --exclude_assets officechair")
     args = parser.parse_args()
 
     if not args.ablation:
-        parser.error("Provide at least one --ablation NAME CFG CKPT")
-    if not args.mesh:
-        parser.error("Provide at least one --mesh TAXONOMY_ID MESH_PATH")
+        parser.error("Provide at least one --ablation NAME CFG CKPT TXT")
 
     ablation_configs = [
-        {"name": a[0], "cfg_path": a[1], "ckpt_path": a[2]}
+        {"name": a[0], "cfg_path": a[1], "ckpt_path": a[2], "test_txt_path": a[3]}
         for a in args.ablation
     ]
-    mesh_specs = [(m[0], m[1]) for m in args.mesh]
 
-    run_zero_shot(
-        ablation_configs = ablation_configs,
-        txt_path         = args.txt_path,
-        data_dir         = args.data_dir,
-        mesh_specs       = mesh_specs,
-        out_path         = args.out_path,
-        gt_n_points      = args.gt_n_points,
-        gt_seed          = args.gt_seed,
-        panel_size       = args.panel_size,
-        grid_panel_size  = args.grid_panel_size,
-        point_size       = args.point_size,
-        icp_max_dist     = args.icp_max_dist,
-        icp_max_iter     = args.icp_max_iter,
-        exclude_assets   = args.exclude_assets,
-    )
+    main(ablation_configs, args.out_path)
