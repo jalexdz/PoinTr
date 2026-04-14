@@ -15,23 +15,41 @@ def log_config_to_file(cfg, pre='cfg', logger=None):
             continue
         print_log(f'{pre}.{key} : {val}', logger = logger)
 
-def merge_new_config(config, new_config):
+def merge_new_config(config, new_config, current_cfg_path=None):
     for key, val in new_config.items():
         if not isinstance(val, dict):
             if key == '_base_':
-                with open(new_config['_base_'], 'r') as f:
+                base_path = val
+                if not os.path.isabs(base_path):
+                    base_path = os.path.normpath(
+                        os.path.join(os.path.dirname(current_cfg_path), base_path)
+                    )
+
+                with open(base_path, 'r') as f:
                     try:
-                        val = yaml.load(f, Loader=yaml.FullLoader)
+                        base_cfg = yaml.load(f, Loader=yaml.FullLoader)
                     except:
-                        val = yaml.load(f)
-                config[key] = EasyDict()
-                merge_new_config(config[key], val)
+                        base_cfg = yaml.load(f)
+
+                merge_new_config(config, base_cfg, current_cfg_path=base_path)
             else:
                 config[key] = val
                 continue
-        if key not in config:
-            config[key] = EasyDict()
-        merge_new_config(config[key], val)
+        else:
+            if key not in config:
+                config[key] = EasyDict()
+            merge_new_config(config[key], val, current_cfg_path=current_cfg_path)
+    return config
+
+
+def cfg_from_yaml_file(cfg_file):
+    config = EasyDict()
+    with open(cfg_file, 'r') as f:
+        try:
+            new_config = yaml.load(f, Loader=yaml.FullLoader)
+        except:
+            new_config = yaml.load(f)
+    merge_new_config(config=config, new_config=new_config, current_cfg_path=cfg_file)
     return config
 
 def cfg_from_yaml_file(cfg_file):
