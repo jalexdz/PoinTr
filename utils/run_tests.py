@@ -408,7 +408,7 @@ def _render_with_camera_params(pcd, params, width=512, height=512,
 def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
                               predictor, asset, cd, f1, sel_type,
                               include_error=True, panel_size=(512, 512),
-                              point_size=3.0, title_font_path=None):
+                              point_size=3.0, title_font_path=None, debug_base_path=None):
     assert os.path.exists(partial_pcd_path), f"Partial PCD not found: {partial_pcd_path}"
     assert os.path.exists(gt_pcd_path),      f"GT PCD not found: {gt_pcd_path}"
 
@@ -428,6 +428,14 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
         np.tile([0.0, 1.0, 0.0], (complete.shape[0], 1))
     )
 
+    if debug_base_path is not None:
+        _save_debug_pointclouds(
+            complete_xyz=complete,
+            gt_xyz=gt_pts,
+            debug_base_path=debug_base_path,
+            vmax_mm=100.0,
+        )
+
     w, h   = panel_size
     anchor = _make_camera_params_from_gt(gt_pcd, fov_deg=60.0, width=w, height=h,
                                           point_size=point_size, visible=False)
@@ -436,15 +444,32 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
     img_partial  = _render_with_camera_params(partial_pcd,  params, width=w, height=h, point_size=point_size)
     img_complete = _render_with_camera_params(complete_pcd, params, width=w, height=h, point_size=point_size)
     img_gt       = _render_with_camera_params(gt_pcd,       params, width=w, height=h, point_size=point_size)
-    panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(img_gt)]
+
+    overlay_pcd = o3d.geometry.PointCloud()
+    overlay_pcd.points = o3d.utility.Vector3dVector(
+        np.vstack([
+            np.asarray(complete_pcd.points),
+            np.asarray(gt_pcd.points),
+        ])
+    )
+
+    overlay_pcd.colors = o3d.utility.Vector3dVector(
+        np.vstack([
+            np.asarray(complete_pcd.colors),
+            np.asarray(gt_pcd.colors),
+        ])
+    )
+
+    image_overlay = _render_with_camera_params(overlay_pcd, params, width=w, height=w, point_size=point_size)
+    panels = [Image.fromarray(img_partial), Image.fromarray(img_complete), Image.fromarray(image_overlay)]
 
     pred_error_stats = None
     if include_error:
         pred_pts = np.asarray(complete_pcd.points).copy()
         gt_pts_err = np.asarray(gt_pcd.points).copy()
 
-        pred_pts -= pred_pts.mean(axis=0)
-        gt_pts_err -= gt_pts_err.mean(axis=0)
+        #pred_pts -= pred_pts.mean(axis=0)
+        #gt_pts_err -= gt_pts_err.mean(axis=0)
 
         complete_pcd_err = o3d.geometry.PointCloud()
         complete_pcd_err.points = o3d.utility.Vector3dVector(pred_pts)
@@ -468,15 +493,15 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
         }
 
     try:
-        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
-        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 25)
+        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 35)
     except Exception:
         title_font = caption_font = ImageFont.load_default()
 
     pad_between    = 0
     grid_w         = 2 * w + pad_between
     grid_h         = 2 * h + pad_between
-    caption_height = 30
+    caption_height = 70
     footer_padding = 30
 
     sel_label = {"lowest": "Best", "median": "Median", "highest": "Worst"}.get(
@@ -484,7 +509,7 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
     )
     cd_txt    = f"CD: {cd:.2f} mm" if cd is not None else "CD: N/A"
     f1_txt    = f"F1: {f1:.2f}"    if f1 is not None else "F1: N/A"
-    title_txt = f"{asset.capitalize()} {sel_label} ({cd_txt}, {f1_txt})"
+    title_txt = f"{asset.capitalize()} {sel_label}\n{cd_txt}, {f1_txt}"
 
     tmp_draw       = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     bbox_title     = tmp_draw.textbbox((0, 0), title_txt, font=title_font)
@@ -506,14 +531,14 @@ def render_triplet_from_pcds(partial_pcd_path, gt_pcd_path, out_path,
 
     bbox    = draw.textbbox((0, 0), title_txt, font=title_font)
     title_x = max(0, (final_w - (bbox[2] - bbox[0])) // 2)
-    draw.text((title_x, title_pad_top), title_txt, fill=(0, 0, 0), font=title_font)
+    draw.multiline_text((title_x, title_pad_top), title_txt, fill=(0, 0, 0), font=title_font, align='center')
 
     caption_labels = ["Part.", "Pred."]
     if include_error:
         caption_labels.append(
-            f"Mean Err.:{2*pred_error_stats['mean']:.2f} mm\nMax Err.:{2*pred_error_stats['max']:.2f} mm"
+            f"Mean Err: {2*pred_error_stats['mean']:.2f} mm\nMax Err: {2*pred_error_stats['max']:.2f} mm"
         )
-    caption_labels.append("GT")
+    caption_labels.append("GT + Pred.")
 
     for i, label in enumerate(caption_labels):
         row_i, col_i = i // 2, i % 2
@@ -703,11 +728,14 @@ def compute_samples(df, ablation_name, predictor,
         )
         out_graphic = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}_grid.pdf")
 
+        debug_base = os.path.join(job_out_dir, f"{asset}_{sel_type}_{view_id}")
+
         render_triplet_from_pcds(
             partial_pcd_path, gt_pcd_path, out_graphic,
             predictor, asset,
             cd=cd_val, f1=f1_val, sel_type=display_sel,
             include_error=True, panel_size=(512, 512), point_size=2.0,
+	    debug_base_path=debug_base,
         )
 
     return picks_df
@@ -888,6 +916,67 @@ def run_single_ablation(cfg_path, ckpt_path, test_txt_path, ablation_name, out_p
 
     df["ablation"] = ablation_name
     return df, partial_mean_by_asset, completion_mean_by_asset
+
+
+
+def _pcd_from_xyz_rgb(xyz, rgb):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.asarray(xyz, dtype=np.float64))
+    pcd.colors = o3d.utility.Vector3dVector(np.asarray(rgb, dtype=np.float64))
+    return pcd
+
+
+def _save_debug_pointclouds(complete_xyz, gt_xyz, debug_base_path, vmax_mm=100.0):
+    """
+    Saves:
+      1) combined predicted + GT cloud
+      2) GT cloud colored by nearest-neighbor distance to prediction
+      3) optional CSV of GT->pred NN distances
+
+    debug_base_path example:
+      /path/to/woodentable_median_12_debug
+    """
+    os.makedirs(os.path.dirname(debug_base_path), exist_ok=True)
+
+    complete_xyz = np.asarray(complete_xyz, dtype=np.float64)
+    gt_xyz       = np.asarray(gt_xyz, dtype=np.float64)
+
+    # --- combined cloud: pred=green, gt=blue ---
+    pred_rgb = np.tile(np.array([[0.0, 1.0, 0.0]], dtype=np.float64), (complete_xyz.shape[0], 1))
+    gt_rgb   = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float64), (gt_xyz.shape[0], 1))
+
+    combined_xyz = np.vstack([complete_xyz, gt_xyz])
+    combined_rgb = np.vstack([pred_rgb, gt_rgb])
+
+    combined_pcd = _pcd_from_xyz_rgb(combined_xyz, combined_rgb)
+    o3d.io.write_point_cloud(f"{debug_base_path}_combined_pred_gt.pcd", combined_pcd)
+
+    # --- GT colored by GT->pred NN distance ---
+    pred_pcd = o3d.geometry.PointCloud()
+    pred_pcd.points = o3d.utility.Vector3dVector(complete_xyz)
+
+    gt_pcd = o3d.geometry.PointCloud()
+    gt_pcd.points = o3d.utility.Vector3dVector(gt_xyz)
+
+    err_colors, dists_mm = _compute_error_colormap(pred_pcd, gt_pcd, cmap='turbo', vmax=vmax_mm)
+
+    gt_err_pcd = o3d.geometry.PointCloud()
+    gt_err_pcd.points = o3d.utility.Vector3dVector(gt_xyz)
+    gt_err_pcd.colors = o3d.utility.Vector3dVector(err_colors)
+    o3d.io.write_point_cloud(f"{debug_base_path}_gt_to_pred_error.pcd", gt_err_pcd)
+
+    # --- optional raw distances for debugging ---
+    np.savetxt(
+        f"{debug_base_path}_gt_to_pred_error_mm.csv",
+        dists_mm.reshape(-1, 1),
+        delimiter=",",
+        header="gt_to_pred_nn_distance_mm",
+        comments="",
+    )
+
+
+
+
 
 
 # ─────────────────────────────────────────────

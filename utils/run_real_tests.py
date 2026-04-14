@@ -530,7 +530,7 @@ def _load_fonts():
 # ─────────────────────────────────────────────
 
 def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
-                     caption_height=30, footer_padding=30,
+                     caption_height=70, footer_padding=30,
                      err_mean=None, err_max=None):
     """
     Identical layout to render_triplet_from_pcds.
@@ -540,12 +540,12 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
       bot-left: Err.  | bot-right: GT
     """
     try:
-        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
-        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 25)
+        title_font   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+        caption_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 35)
     except Exception:
         title_font = caption_font = ImageFont.load_default()
 
-    err_label = (f"Err. (mean={err_mean:.2f} mm, max={err_max:.2f} mm)"
+    err_label = (f"Mean Err: {err_mean:.2f} mm\nMax Err: {err_max:.2f} mm"
                  if err_mean is not None else "KNN Err.")
     cap_labels = ["Part.", "Pred.", err_label, "GT + Pred."]
 
@@ -571,7 +571,7 @@ def compose_2x2_grid(panels, title_txt, panel_w, panel_h,
 
     bbox    = draw.textbbox((0, 0), title_txt, font=title_font)
     title_x = max(0, (final_w - (bbox[2] - bbox[0])) // 2)
-    draw.text((title_x, title_pad_top), title_txt, fill=(0, 0, 0), font=title_font)
+    draw.multiline_text((title_x, title_pad_top), title_txt, fill=(0, 0, 0), font=title_font, align='center')
 
     for i, label in enumerate(cap_labels):
         row_i, col_i = i // 2, i % 2
@@ -615,7 +615,7 @@ def compose_ablation_row_grid(rows_data, asset, view_id,
     out_img = Image.new("RGB", (total_w, total_h), (255, 255, 255))
     draw    = ImageDraw.Draw(out_img)
 
-    title_txt = f"{asset.replace('_', ' ').capitalize()}  —  view {view_id}"
+    title_txt = f"{asset.replace('_', ' ').capitalize()} View {view_id}\n"
     bb = draw.textbbox((0, 0), title_txt, font=bold_font)
     tx = max(0, (total_w - (bb[2] - bb[0])) // 2)
     draw.text((tx, 6), title_txt, fill=(0, 0, 0), font=bold_font)
@@ -891,9 +891,9 @@ def run_zero_shot(ablation_configs: list[dict],
             # Individual 2×2 grid
             abl_tag   = "".join(abl_name.strip().lower().split())
             title_txt = (
-                f"{abl_name} - {tid.replace('_',' ').capitalize()} {vid} "
-                f"(CD: {metrics['icp_cd_mm']:.2f} mm, F1: {metrics['icp_f1']:.2f}, "
-                f"Fit: {metrics['fitness']:.2f}, RMSE: {metrics['inlier_rmse_mm']:.2f} mm)"
+                f"{abl_name} {tid.replace('_',' ').capitalize()} {vid}\n"
+                f"CD: {metrics['icp_cd_mm']:.2f}mm, F1: {metrics['icp_f1']:.2f}\n"
+                f"Fit: {metrics['fitness']:.2f}, RMSE: {metrics['inlier_rmse_mm']:.2f}mm"
             )
             grid_2x2 = compose_2x2_grid(panels, title_txt,
                                          panel_w=panel_size, panel_h=panel_size,
