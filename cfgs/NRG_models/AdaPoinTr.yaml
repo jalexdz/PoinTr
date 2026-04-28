@@ -23,11 +23,11 @@ bnmscheduler: {
 }}
 
 dataset : {
-  train : { _base_: cfgs/dataset_configs/NRG.yaml, 
+  train : { _base_: ../dataset_configs/NRG.yaml, 
             others: {subset: 'train'}},
-  val : { _base_: cfgs/dataset_configs/NRG.yaml, 
+  val : { _base_: ../dataset_configs/NRG.yaml, 
             others: {subset: 'val'}},
-  test : { _base_: cfgs/dataset_configs/NRG.yaml, 
+  test : { _base_: ../dataset_configs/NRG.yaml, 
             others: {subset: 'test'}}}
             
 model : {

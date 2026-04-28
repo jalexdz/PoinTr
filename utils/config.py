@@ -19,7 +19,8 @@ def merge_new_config(config, new_config, current_cfg_path=None):
     for key, val in new_config.items():
         if not isinstance(val, dict):
             if key == '_base_':
-                base_path = val
+                base_path = new_config['_base_']
+
                 if not os.path.isabs(base_path):
                     base_path = os.path.normpath(
                         os.path.join(os.path.dirname(current_cfg_path), base_path)
@@ -27,29 +28,21 @@ def merge_new_config(config, new_config, current_cfg_path=None):
 
                 with open(base_path, 'r') as f:
                     try:
-                        base_cfg = yaml.load(f, Loader=yaml.FullLoader)
+                        val = yaml.load(f, Loader=yaml.FullLoader)
                     except:
-                        base_cfg = yaml.load(f)
+                        val = yaml.load(f)
 
-                merge_new_config(config, base_cfg, current_cfg_path=base_path)
+                config[key] = EasyDict()
+                merge_new_config(config[key], val, current_cfg_path=base_path)
             else:
                 config[key] = val
                 continue
-        else:
-            if key not in config:
-                config[key] = EasyDict()
-            merge_new_config(config[key], val, current_cfg_path=current_cfg_path)
-    return config
 
+        if key not in config:
+            config[key] = EasyDict()
 
-def cfg_from_yaml_file(cfg_file):
-    config = EasyDict()
-    with open(cfg_file, 'r') as f:
-        try:
-            new_config = yaml.load(f, Loader=yaml.FullLoader)
-        except:
-            new_config = yaml.load(f)
-    merge_new_config(config=config, new_config=new_config, current_cfg_path=cfg_file)
+        merge_new_config(config[key], val, current_cfg_path=current_cfg_path)
+
     return config
 
 def cfg_from_yaml_file(cfg_file):
@@ -59,7 +52,13 @@ def cfg_from_yaml_file(cfg_file):
             new_config = yaml.load(f, Loader=yaml.FullLoader)
         except:
             new_config = yaml.load(f)
-    merge_new_config(config=config, new_config=new_config)        
+
+    merge_new_config(
+        config=config,
+        new_config=new_config,
+        current_cfg_path=cfg_file
+    )
+
     return config
 
 def get_config(args, logger=None):
