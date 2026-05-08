@@ -1,10 +1,10 @@
 import os
 import yaml
-from datasets import build_dataset_from_cfg
+from pointr.datasets import build_dataset_from_cfg
 
 from easydict import EasyDict
 import argparse
-from extensions.chamfer_dist import ChamferDistanceL2_split, ChamferDistanceL2
+from pointr.extensions.chamfer_dist import ChamferDistanceL2_split, ChamferDistanceL2
 import torch
 import numpy as np
 

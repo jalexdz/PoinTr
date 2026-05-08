@@ -1,8 +1,9 @@
-from tools import run_net
-from tools import test_net
-from utils import parser, dist_utils, misc
-from utils.logger import *
-from utils.config import *
+from pointr.tools import run_net
+from pointr.tools import test_net
+from pointr.utils import dist_utils, misc
+from pointr.utils import parser
+from pointr.utils.logger import *
+from pointr.utils.config import *
 import time
 import os
 import torch
